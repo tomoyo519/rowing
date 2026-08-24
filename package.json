@@ -1,0 +1,32 @@
+{
+  "name": "make-rowing",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "tunnel": "cloudflared tunnel --url http://localhost:5173",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "shot": "node tools/shot.mjs shots"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@openai/sites-vite-plugin": "0.1.0",
+    "@types/three": "^0.185.4",
+    "@types/web-bluetooth": "^0.0.21",
+    "playwright": "^1.62.1",
+    "typescript": "^7.0.2",
+    "vite": "8.0.13",
+    "vitest": "^3.2.7",
+    "wrangler": "4.92.0"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  }
+}

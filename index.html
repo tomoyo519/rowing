@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>makeRowing</title>
+<style>
+  :root {
+    --bg: #0b1420;
+    --panel: #16222f;
+    --panel-2: #1e2d3d;
+    --line: #2c3d50;
+    --text: #eaf1f7;
+    --muted: #8fa3b6;
+    --accent: #ff5a3c;
+    --accent-2: #35c2a5;
+    --safe-t: env(safe-area-inset-top, 0px);
+    --safe-b: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none;
+    overscroll-behavior: none;
+  }
+  .screen { position: fixed; inset: 0; display: none; flex-direction: column; }
+  .screen.active { display: flex; }
+
+  /* ── 공통 ── */
+  .pad { padding: calc(var(--safe-t) + 28px) 28px calc(var(--safe-b) + 28px); }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  h2 { font-size: 19px; margin: 0 0 14px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 15px; margin: 0 0 26px; line-height: 1.5; }
+  button {
+    font: inherit; color: inherit; border: none; background: none;
+    cursor: pointer; touch-action: manipulation;
+  }
+  .btn {
+    display: block; width: 100%; padding: 17px 20px; border-radius: 14px;
+    background: var(--accent); color: #fff; font-size: 17px; font-weight: 600;
+    text-align: center; transition: transform .08s, opacity .15s;
+  }
+  .btn:active { transform: scale(.985); }
+  .btn.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  .btn:disabled { opacity: .4; }
+  .row { display: flex; gap: 12px; }
+  .row > * { flex: 1; }
+
+  /* ── 연결 화면 ── */
+  #screen-connect .pad { max-width: 520px; margin: auto; width: 100%; }
+  .note {
+    margin-top: 20px; padding: 14px 16px; border-radius: 12px;
+    background: var(--panel); border: 1px solid var(--line);
+    color: var(--muted); font-size: 13.5px; line-height: 1.6;
+  }
+  .err { color: #ff8b73; font-size: 14px; min-height: 20px; margin-top: 14px; }
+
+  /* ── 코스 선택 ── */
+  #screen-course .pad { overflow-y: auto; -webkit-overflow-scrolling: touch; max-width: 900px; margin: 0 auto; width: 100%; }
+  .group-head {
+    font-size: 12px; font-weight: 700; color: var(--accent); letter-spacing: .14em;
+    margin: 24px 0 11px;
+  }
+  .group-head:first-child { margin-top: 0; }
+  .course-grid { display: grid; gap: 12px; }
+  @media (min-width: 720px) { .course-grid { grid-template-columns: repeat(3, 1fr); } }
+  .course {
+    position: relative; text-align: left; padding: 17px; border-radius: 16px;
+    background: var(--panel); border: 2px solid var(--line);
+    transition: border-color .15s, background .15s;
+    display: flex; flex-direction: column;
+  }
+  .course.sel { border-color: var(--accent); background: var(--panel-2); }
+  .chead { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .course .nm { font-size: 17px; font-weight: 700; }
+  .course .loc { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .course .tag {
+    flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+    padding: 4px 8px; border-radius: 7px;
+    background: rgba(255,255,255,.07); color: var(--muted);
+  }
+  .course.sel .tag { background: rgba(255,90,60,.18); color: var(--accent); }
+  .course .dur {
+    flex: none; font-size: 10.5px; font-weight: 700; color: var(--muted);
+    padding: 4px 8px; border-radius: 7px; background: rgba(255,255,255,.05);
+  }
+  .ctags { display: flex; gap: 5px; flex: none; }
+  .group-head.gentle { color: var(--accent-2); }
+  .group-head.varied { color: #7fa8c4; }
+  .group-head.hard   { color: #ffb648; }
+  .group-note { font-size: 12px; color: var(--muted); margin: -4px 0 11px; }
+  .course .range {
+    font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+    margin: -4px 0 9px;
+  }
+  .spark { width: 100%; height: 30px; display: block; margin: 13px 0 8px; overflow: visible; }
+  .spark-line { fill: none; stroke: var(--accent-2); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+  .spark-fill { fill: rgba(53,194,165,.13); stroke: none; }
+  .course .desc { font-size: 12.5px; color: var(--muted); line-height: 1.55; margin-bottom: 13px; flex: 1; }
+  .course .est {
+    padding-top: 11px; border-top: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
+  }
+  .course .est b { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .course .est span { font-size: 11px; color: var(--muted); text-align: right; }
+
+  .tiers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 12px; }
+  .tier {
+    padding: 13px 8px; border-radius: 12px; text-align: center;
+    background: var(--panel); border: 2px solid var(--line); transition: border-color .15s;
+  }
+  .tier.sel { border-color: var(--accent-2); background: var(--panel-2); }
+  .tier b { display: block; font-size: 15px; margin-bottom: 3px; }
+  .tier span { font-size: 11px; color: var(--muted); }
+  .tier-hint { color: var(--muted); font-size: 13px; text-align: center; margin: 0 0 28px; }
+
+  /* ── 레이스 ── */
+  #cv { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .hud { position: absolute; inset: 0; pointer-events: none; }
+  .hud-top {
+    position: absolute; top: calc(var(--safe-t) + 14px); left: 0; right: 0;
+    display: flex; justify-content: center; gap: 10px; padding: 0 16px; flex-wrap: wrap;
+  }
+  .stat {
+    background: rgba(9,17,26,.62); backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,.09); border-radius: 13px;
+    padding: 9px 15px; min-width: 92px; text-align: center;
+  }
+  .stat .k { font-size: 10.5px; color: var(--muted); letter-spacing: .09em; margin-bottom: 3px; }
+  .stat .v { font-size: 23px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .stat .u { font-size: 10.5px; color: var(--muted); margin-left: 2px; font-weight: 400; }
+  .stat.hero .v { font-size: 30px; color: var(--accent); }
+  .stat .v.fast { color: var(--accent-2); }
+  .stat .v.slow { color: #ff8b73; }
+
+  .segment {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    top: calc(var(--safe-t) + 96px);
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(9,17,26,.62); backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,.09); border-radius: 11px;
+    padding: 7px 15px; transition: border-color .3s;
+  }
+  .segment.hard { border-color: rgba(255,90,60,.55); }
+  .segment.easy { border-color: rgba(53,194,165,.5); }
+  .segment .seg-label { font-size: 13px; font-weight: 700; letter-spacing: .03em; }
+  .segment .seg-rem {
+    font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums;
+  }
+  .segment .seg-rem:empty { display: none; }
+
+  /* ── 5분 피드백 모달 ── */
+  .fb {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    pointer-events: none; padding: 24px;
+  }
+  .fb.on { display: flex; }
+  .fb-card {
+    pointer-events: auto; width: 100%; max-width: 380px;
+    background: rgba(13,22,32,.93); backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+    border: 1px solid rgba(255,255,255,.12); border-left-width: 4px;
+    border-radius: 18px; padding: 22px 24px 0;
+    box-shadow: 0 24px 70px rgba(0,0,0,.55);
+    animation: fb-in .32s cubic-bezier(.2,.9,.3,1);
+    overflow: hidden;
+  }
+  @keyframes fb-in {
+    from { opacity: 0; transform: translateY(14px) scale(.97); }
+    to   { opacity: 1; transform: none; }
+  }
+  .fb-card.out { animation: fb-out .28s ease forwards; }
+  @keyframes fb-out { to { opacity: 0; transform: translateY(-8px) scale(.98); } }
+  .fb-card.great  { border-left-color: #35c2a5; }
+  .fb-card.good   { border-left-color: #6fd4b8; }
+  .fb-card.onpace { border-left-color: #7fa8c4; }
+  .fb-card.push   { border-left-color: #ffb648; }
+  .fb-card.behind { border-left-color: #ff5a3c; }
+  .fb-title { font-size: 22px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 7px; }
+  .fb-card.great .fb-title, .fb-card.good .fb-title { color: var(--accent-2); }
+  .fb-card.push .fb-title { color: #ffb648; }
+  .fb-card.behind .fb-title { color: var(--accent); }
+  .fb-body { font-size: 14px; color: var(--muted); line-height: 1.6; margin-bottom: 16px; }
+  .fb-stats { display: flex; gap: 8px; padding-bottom: 20px; }
+  .fb-stats div { flex: 1; }
+  .fb-stats .k { font-size: 10px; color: var(--muted); letter-spacing: .07em; margin-bottom: 3px; }
+  .fb-stats .v { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .fb-bar { height: 3px; background: rgba(255,255,255,.1); margin: 0 -24px; }
+  .fb-bar i { display: block; height: 100%; background: rgba(255,255,255,.4); width: 100%; }
+
+  .landmark {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: calc(var(--safe-b) + 128px);
+    font-size: 14px; font-weight: 600; letter-spacing: .05em;
+    color: rgba(255,255,255,.9); text-shadow: 0 2px 14px rgba(0,0,0,.7);
+    opacity: 0; transition: opacity .35s; pointer-events: none;
+  }
+
+  .gapbar {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: calc(var(--safe-b) + 74px); text-align: center;
+  }
+  .gapbar .g { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .gapbar .g.ahead { color: var(--accent-2); }
+  .gapbar .g.behind { color: #ff8b73; }
+  .gapbar .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  .progress {
+    position: absolute; left: 26px; right: 26px; bottom: calc(var(--safe-b) + 40px);
+    height: 4px; background: rgba(255,255,255,.14); border-radius: 3px; overflow: hidden;
+  }
+  .progress i { display: block; height: 100%; background: var(--accent); border-radius: 3px; width: 0; }
+
+  .race-ctl {
+    position: absolute; top: calc(var(--safe-t) + 14px); right: 16px;
+    pointer-events: auto; display: flex; gap: 8px;
+  }
+  .cam-toast {
+    position: absolute; top: calc(var(--safe-t) + 66px); right: 16px;
+    font-size: 12px; color: var(--muted); opacity: 0; transition: opacity .3s;
+  }
+  .icon-btn {
+    width: 42px; height: 42px; border-radius: 12px; font-size: 17px;
+    background: rgba(9,17,26,.62); border: 1px solid rgba(255,255,255,.09);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+
+  .simctl {
+    position: absolute; left: 26px; bottom: calc(var(--safe-b) + 62px);
+    pointer-events: auto; display: none; align-items: center; gap: 11px;
+    background: rgba(9,17,26,.62); border: 1px solid rgba(255,255,255,.09);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-radius: 12px; padding: 9px 15px;
+  }
+  .simctl.on { display: flex; }
+  .simctl label { font-size: 11px; color: var(--muted); letter-spacing: .06em; }
+  .simctl input { width: 130px; accent-color: var(--accent); }
+
+  .countdown {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 110px; font-weight: 800; color: #fff; text-shadow: 0 6px 40px rgba(0,0,0,.6);
+    background: rgba(6,12,19,.42); pointer-events: none;
+  }
+
+  /* ── 기록 ── */
+  #screen-history .pad { overflow-y: auto; -webkit-overflow-scrolling: touch; max-width: 760px; margin: 0 auto; width: 100%; }
+  .totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 26px; }
+  .totals > div { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 13px; text-align: center; }
+  .totals .k { font-size: 10.5px; color: var(--muted); letter-spacing: .07em; margin-bottom: 4px; }
+  .totals .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .totals .v span { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 2px; }
+
+  .hist-list { display: flex; flex-direction: column; gap: 9px; margin-bottom: 26px; }
+  .hrow {
+    text-align: left; width: 100%; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 13px; padding: 15px 17px;
+  }
+  .hrow-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .hrow .nm { font-size: 15px; font-weight: 700; }
+  .hrow .when { font-size: 11.5px; color: var(--muted); flex: none; }
+  .hrow .sub { display: flex; gap: 14px; margin-top: 9px; font-size: 12.5px; color: var(--muted); }
+  .hrow .sub b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .hrow .pb { color: #ffb648; font-size: 11px; font-weight: 700; margin-left: 6px; }
+  .hrow .dnf { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .hrow-detail { display: none; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .hrow.open .hrow-detail { display: block; }
+  .hcurve { width: 100%; height: 76px; display: block; overflow: visible; }
+  .hcurve-line { fill: none; stroke: var(--accent-2); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+  .hcurve-target { fill: none; stroke: rgba(255,255,255,.3); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+  .hchart { position: relative; }
+  .hy {
+    position: absolute; right: 0; font-size: 10px; color: var(--muted);
+    font-variant-numeric: tabular-nums; background: var(--panel); padding: 0 3px;
+  }
+  .hy-top { top: -2px; }
+  .hy-bot { bottom: -2px; }
+  .hcurve-cap { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: 6px; }
+  .hrow-actions { margin-top: 13px; }
+  .link-btn { font-size: 12.5px; color: #ff8b73; padding: 6px 0; }
+  .empty { color: var(--muted); font-size: 14px; text-align: center; padding: 46px 0; line-height: 1.7; }
+
+  /* ── 요약 ── */
+  #screen-summary .pad { max-width: 620px; margin: auto; width: 100%; overflow-y: auto; }
+  .sumgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin: 22px 0 28px; }
+  .sumcell { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 15px 17px; }
+  .sumcell .k { font-size: 11.5px; color: var(--muted); letter-spacing: .07em; margin-bottom: 5px; }
+  .sumcell .v { font-size: 27px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sumcell .v span { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 3px; }
+  .verdict { font-size: 15px; line-height: 1.6; color: var(--muted); margin-bottom: 8px; }
+  .verdict b { color: var(--text); }
+</style>
+</head>
+<body>
+
+<!-- ───────── 연결 ───────── -->
+<section id="screen-connect" class="screen active">
+  <div class="pad">
+    <h1>makeRowing</h1>
+    <p class="sub">FTMS 로잉머신을 연결하고 코스를 저어보세요.</p>
+    <button id="btn-ble" class="btn">로잉머신 연결</button>
+    <div style="height:12px"></div>
+    <button id="btn-sim" class="btn ghost">시뮬레이터로 둘러보기</button>
+    <div style="height:12px"></div>
+    <button id="btn-history" class="btn ghost">기록 보기</button>
+    <div id="connect-err" class="err"></div>
+    <div class="note" id="connect-note"></div>
+  </div>
+</section>
+
+<!-- ───────── 코스 선택 ───────── -->
+<section id="screen-course" class="screen">
+  <div class="pad">
+    <h1>코스 선택</h1>
+    <p class="sub">목표 페이스를 먼저 정하면 각 코스의 예상 거리가 계산됩니다.<br>코스마다 강도 변화 패턴이 다릅니다 — 카드의 그래프가 시간에 따른 페이스 곡선입니다.</p>
+
+    <h2>목표 페이스</h2>
+    <div class="tiers" id="tiers"></div>
+    <p class="tier-hint" id="tier-hint"></p>
+
+    <h2>코스</h2>
+    <div class="courses" id="courses"></div>
+
+    <button id="btn-start" class="btn">시작</button>
+    <div style="height:12px"></div>
+    <div class="row">
+      <button id="btn-history-2" class="btn ghost">기록</button>
+      <button id="btn-back" class="btn ghost">연결 화면으로</button>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── 기록 ───────── -->
+<section id="screen-history" class="screen">
+  <div class="pad">
+    <h1>기록</h1>
+    <p class="sub">이 브라우저에 저장됩니다. 브라우저 데이터를 지우면 함께 사라집니다.</p>
+    <div class="totals" id="hist-totals"></div>
+    <div class="hist-list" id="hist-list"></div>
+    <button id="btn-hist-back" class="btn ghost">돌아가기</button>
+  </div>
+</section>
+
+<!-- ───────── 레이스 ───────── -->
+<section id="screen-race" class="screen">
+  <canvas id="cv"></canvas>
+  <div class="hud">
+    <div class="hud-top">
+      <div class="stat hero"><div class="k">SPLIT /500m</div><div class="v" id="s-split">--:--</div></div>
+      <div class="stat"><div class="k">목표</div><div class="v" id="s-target">--:--</div></div>
+      <div class="stat"><div class="k">거리</div><div class="v" id="s-dist">0<span class="u">m</span></div></div>
+      <div class="stat"><div class="k">남은 시간</div><div class="v" id="s-time">00:00</div></div>
+      <div class="stat"><div class="k">SPM</div><div class="v" id="s-spm">0</div></div>
+      <div class="stat"><div class="k">파워</div><div class="v" id="s-pow">0<span class="u">W</span></div></div>
+    </div>
+    <div class="segment" id="segment">
+      <span class="seg-label">—</span><span class="seg-rem"></span>
+    </div>
+    <div class="landmark" id="landmark"></div>
+    <div class="cam-toast" id="cam-toast"></div>
+    <div class="gapbar">
+      <div class="g" id="s-gap">0m</div>
+      <div class="lbl">페이스 보트 대비</div>
+    </div>
+    <div class="progress"><i id="s-prog"></i></div>
+    <div class="race-ctl">
+      <button class="icon-btn" id="btn-cam" title="카메라 전환">◳</button>
+      <button class="icon-btn" id="btn-quit">✕</button>
+    </div>
+    <div class="simctl" id="simctl">
+      <label>강도</label>
+      <input type="range" id="sim-intensity" min="0" max="100" value="55" />
+    </div>
+  </div>
+  <div class="fb" id="feedback">
+    <div class="fb-card" id="fb-card">
+      <div class="fb-title" id="fb-title"></div>
+      <div class="fb-body" id="fb-body"></div>
+      <div class="fb-stats" id="fb-stats"></div>
+      <div class="fb-bar"><i id="fb-bar"></i></div>
+    </div>
+  </div>
+  <div class="countdown" id="countdown" style="display:none"></div>
+</section>
+
+<!-- ───────── 요약 ───────── -->
+<section id="screen-summary" class="screen">
+  <div class="pad">
+    <h1 id="sum-title">세션 완료</h1>
+    <p class="verdict" id="sum-verdict"></p>
+    <div class="sumgrid" id="sumgrid"></div>
+    <button id="btn-again" class="btn">다시 하기</button>
+    <div style="height:12px"></div>
+    <button id="btn-sum-history" class="btn ghost">기록 보기</button>
+  </div>
+</section>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
