@@ -2,10 +2,16 @@ import * as THREE from 'three'
 import { World } from './world'
 import { Rig, COLORS_PLAYER, COLORS_PACE } from './rig'
 import { projectedDistance } from '../game/courses'
+import { splitToSpeed } from '../game/physics'
+import { StrokeEngine } from '../game/stroke'
 import type { Session } from '../game/state'
 
 /** 페이스 보트가 나란히 달리는 옆 레인 간격 (m) */
-const PACE_LANE_Z = -3.4
+export const PACE_LANE_Z = -6.4
+
+export function paceStrokeRate(intensity: number) {
+  return Math.max(18, Math.min(36, 24 + (intensity - 1) * 45))
+}
 
 /**
  * 카메라 프리셋.
@@ -27,10 +33,10 @@ export const CAMERAS: CamPreset[] = [
   // 로어는 진행 반대편을 보고 앉으므로, 뒤통수를 보려면 카메라가 앞에 있어야 하고
   // 그 대가로 보이는 풍경은 '앞으로 올 코스'가 아니라 '지나온 코스'가 된다.
   // 퍼들과 강둑이 뒤로 멀어지면서 속도감을 만든다.
-  { name: '정면', pos: [10.4, 2.55, 0], look: [-1.0, 0.8, 0], fov: 38, fovPortrait: 52 },
-  { name: '쿼터', pos: [-8.0, 2.9, 5.5], look: [2.0, 0.55, 0], fov: 44, fovPortrait: 58 },
-  { name: '추격', pos: [-9.0, 2.8, 1.6], look: [2.6, 0.55, 0], fov: 42, fovPortrait: 56 },
-  { name: '사이드', pos: [-1.2, 2.0, 8.6], look: [-0.2, 0.62, 0], fov: 46, fovPortrait: 62 },
+  { name: '정면', pos: [12.4, 2.8, 0], look: [-1.0, 0.8, 0], fov: 42, fovPortrait: 72 },
+  { name: '쿼터', pos: [-9.0, 3.2, 6.5], look: [2.0, 0.55, 0], fov: 48, fovPortrait: 68 },
+  { name: '추격', pos: [-10.5, 3.4, 2.4], look: [2.6, 0.55, 0], fov: 46, fovPortrait: 66 },
+  { name: '사이드', pos: [-4.4, 4.8, 11.0], look: [0, 0.62, 0], fov: 50, fovPortrait: 70 },
 ]
 
 export class View {
@@ -40,7 +46,9 @@ export class View {
   private player: Rig
   private pace: Rig
   private total: number
+  private paceStroke = new StrokeEngine()
   private camShake = 0
+  private frameZ = 0
   private camIndex = 0
 
   constructor(canvas: HTMLCanvasElement, session: Session) {
@@ -63,6 +71,9 @@ export class View {
     this.pace = new Rig(COLORS_PACE, 0.75)
     this.pace.group.position.z = PACE_LANE_Z
     this.world.scene.add(this.pace.group)
+    this.paceStroke.onSample(24, undefined, 0)
+    this.paceStroke.spm = 24
+    this.paceStroke.phase = 0.45
 
     this.resize()
   }
@@ -84,8 +95,10 @@ export class View {
 
     this.player.apply(pose, dt, session.boat.speed)
 
-    // 페이스 보트는 자기 리듬으로 젓는다 — 구간 강도에 따라 레이트가 변한다
-    this.pace.apply(pose, dt, session.boat.speed)
+    // 페이스 보트는 플레이어와 다른 위상으로 젓는다 — 실루엣이 한 몸처럼 겹치지 않는다
+    this.paceStroke.onSample(paceStrokeRate(m.intensity), undefined, timeSec * 1000)
+    this.paceStroke.update(dt)
+    this.pace.apply(this.paceStroke.pose(), dt, splitToSpeed(m.targetSplit))
     this.pace.group.position.x = -m.gap
     const visible = Math.abs(m.gap) < 90
     this.pace.group.visible = visible
@@ -97,6 +110,8 @@ export class View {
     const surge = pose.inWater ? Math.sin(pose.driveProgress * Math.PI) : -0.25
     this.camShake += (surge - this.camShake) * (1 - Math.exp(-dt / 0.12))
     const speedK = Math.min(1, session.boat.speed / 5)
+    const targetFrameZ = visible ? PACE_LANE_Z / 2 : 0
+    this.frameZ += (targetFrameZ - this.frameZ) * (1 - Math.exp(-dt / 0.35))
 
     const cam = CAMERAS[this.camIndex]!
     // 빨라질수록 카메라가 조금 물러난다 — 보트가 어느 쪽에 있든 멀어지는 방향으로
@@ -104,10 +119,10 @@ export class View {
     this.camera.position.set(
       cam.pos[0] + speedK * 0.5 * away + this.camShake * 0.10 * -away,
       cam.pos[1] + this.camShake * 0.04,
-      cam.pos[2] + speedK * 0.25 * Math.sign(cam.pos[2] || 1),
+      cam.pos[2] + this.frameZ + speedK * 0.25 * Math.sign(cam.pos[2] || 1),
     )
     this.camera.lookAt(
-      cam.look[0], cam.look[1] + this.camShake * 0.025, cam.look[2],
+      cam.look[0], cam.look[1] + this.camShake * 0.025, cam.look[2] + this.frameZ,
     )
 
     this.renderer.render(this.world.scene, this.camera)
