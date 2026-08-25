@@ -33,6 +33,8 @@ export class Session {
   phase: Phase = 'idle'
   readonly boat = new BoatTracker()
   readonly stroke = new StrokeEngine()
+  /** 한 운동 안에서는 재현 가능하고, 새 운동을 시작할 때만 달라지는 날씨 seed. */
+  readonly weatherSeed: string
 
   paceDistance = 0
   elapsed = 0
@@ -47,7 +49,9 @@ export class Session {
     public course: Course,
     /** 기준 500m 스플릿 (초). 구간 강도가 여기에 곱해진다. */
     public baseSplit: number,
-  ) {}
+  ) {
+    this.weatherSeed = `${course.id}:${Date.now()}:${Math.random()}`
+  }
 
   start() {
     this.phase = 'running'

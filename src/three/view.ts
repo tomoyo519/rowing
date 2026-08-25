@@ -55,20 +55,22 @@ export class View {
     this.renderer = new THREE.WebGLRenderer({
       canvas, antialias: true, powerPreference: 'high-performance',
     })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    // 고해상도 iPad에서도 투명 날씨 효과가 프레임을 과도하게 채우지 않게 제한한다.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.05
 
     this.camera = new THREE.PerspectiveCamera(52, 1, 0.1, 500)
 
-    this.world = new World(session.course)
+    this.world = new World(session.course, session.weatherSeed)
+    this.world.attachWeatherToCamera(this.camera)
     this.total = projectedDistance(session.course, session.baseSplit)
 
     this.player = new Rig(COLORS_PLAYER)
     this.world.scene.add(this.player.group)
 
-    this.pace = new Rig(COLORS_PACE, 0.75)
+    this.pace = new Rig(COLORS_PACE, 0.82)
     this.pace.group.position.z = PACE_LANE_Z
     this.world.scene.add(this.pace.group)
     this.paceStroke.onSample(24, undefined, 0)
@@ -103,7 +105,7 @@ export class View {
     const visible = Math.abs(m.gap) < 90
     this.pace.group.visible = visible
 
-    this.world.update(timeSec, m.distance, this.total, 0)
+    this.world.update(timeSec, m.elapsed, m.distance, this.total, 0)
 
     // ── 카메라 ──────────────────────────────────────────────
     // 드라이브에 맞춰 아주 약간 밀렸다 당겨진다

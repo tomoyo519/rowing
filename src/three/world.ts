@@ -1,5 +1,12 @@
 import * as THREE from 'three'
 import { Water } from './water'
+import {
+  createWeatherAppearance,
+  resolveWeatherAppearance,
+  WeatherSystem,
+  type WeatherBasePalette,
+  type WeatherBlend,
+} from './weather'
 import type { Course, Landmark } from '../game/courses'
 
 /**
@@ -284,11 +291,24 @@ function createHeron(
 export class World {
   readonly scene = new THREE.Scene()
   readonly water: Water
+  readonly weather: WeatherSystem
   private sky: THREE.Mesh
   private sun: THREE.DirectionalLight
   private hemi: THREE.HemisphereLight
+  private ambient: THREE.AmbientLight
+  private fog: THREE.Fog
+  private bankMaterial: THREE.MeshStandardMaterial
+  private leafMaterial: THREE.MeshStandardMaterial
+  private cloudMaterial!: THREE.MeshBasicMaterial
+  private skyUniforms = {
+    uTop: { value: new THREE.Color() },
+    uBottom: { value: new THREE.Color() },
+  }
+  private baseWeatherPalette: WeatherBasePalette
+  private weatherAppearance = createWeatherAppearance()
   private trees: THREE.Object3D[] = []
   private banks: THREE.Mesh[] = []
+  private landmarkLeafMaterials: THREE.MeshStandardMaterial[] = []
   private spectators: LoopObject[] = []
   private ducks: LoopObject[] = []
   private clouds: LoopObject[] = []
@@ -297,9 +317,18 @@ export class World {
   private landmarkNodes: { obj: THREE.Object3D; lm: Landmark }[] = []
   private course: Course
 
-  constructor(course: Course) {
+  constructor(course: Course, weatherSeed = `${course.id}:weather`) {
     this.course = course
     const p = course.venue.palette
+    this.baseWeatherPalette = {
+      skyTop: new THREE.Color(p.skyTop),
+      skyBottom: new THREE.Color(p.skyBottom),
+      water: new THREE.Color(p.water),
+      waterDeep: new THREE.Color(p.waterDeep),
+      land: new THREE.Color(p.land),
+    }
+    this.skyUniforms.uTop.value.copy(this.baseWeatherPalette.skyTop)
+    this.skyUniforms.uBottom.value.copy(this.baseWeatherPalette.skyBottom)
 
     // ── 하늘 ────────────────────────────────────────────────
     this.sky = new THREE.Mesh(
@@ -307,10 +336,7 @@ export class World {
       new THREE.ShaderMaterial({
         side: THREE.BackSide,
         depthWrite: false,
-        uniforms: {
-          uTop: { value: new THREE.Color(p.skyTop) },
-          uBottom: { value: new THREE.Color(p.skyBottom) },
-        },
+        uniforms: this.skyUniforms,
         vertexShader: /* glsl */`
           varying float vY;
           void main() {
@@ -331,26 +357,28 @@ export class World {
     this.scene.add(this.sky)
 
     // 안개로 원경을 하늘색에 녹여 깊이를 만든다
-    this.scene.fog = new THREE.Fog(new THREE.Color(p.skyBottom), 40, 260)
+    this.fog = new THREE.Fog(new THREE.Color(p.skyBottom), 40, 260)
+    this.scene.fog = this.fog
 
     // ── 조명 ────────────────────────────────────────────────
     this.hemi = new THREE.HemisphereLight(new THREE.Color(p.skyTop), new THREE.Color(p.water), 0.85)
     this.scene.add(this.hemi)
     this.sun = new THREE.DirectionalLight(0xffffff, 1.45)
-    this.sun.position.set(-30, 22, 18)
+    this.sun.position.set(-30, 22, -8)
     this.scene.add(this.sun)
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.25))
+    this.ambient = new THREE.AmbientLight(0xffffff, 0.25)
+    this.scene.add(this.ambient)
 
     // ── 물 ──────────────────────────────────────────────────
     this.water = new Water(p.water, p.waterDeep)
     this.scene.add(this.water.mesh)
 
     // ── 강둑 ────────────────────────────────────────────────
-    const bankMat = new THREE.MeshStandardMaterial({
+    this.bankMaterial = new THREE.MeshStandardMaterial({
       color: p.land, flatShading: true, roughness: 0.9,
     })
     for (const side of [1, -1]) {
-      const bank = new THREE.Mesh(new THREE.BoxGeometry(700, 1.2, 26), bankMat)
+      const bank = new THREE.Mesh(new THREE.BoxGeometry(700, 1.2, 26), this.bankMaterial)
       bank.position.set(0, 0.25, side * (BANK_Z + 13))
       this.banks.push(bank)
       this.scene.add(bank)
@@ -358,14 +386,16 @@ export class World {
 
     // ── 나무 (반복 배치) ────────────────────────────────────
     const trunkMat = new THREE.MeshStandardMaterial({ color: '#3b2f26', flatShading: true })
-    const leafMat = new THREE.MeshStandardMaterial({ color: p.land, flatShading: true, roughness: 0.95 })
+    this.leafMaterial = new THREE.MeshStandardMaterial({
+      color: p.land, flatShading: true, roughness: 0.95,
+    })
     for (let i = 0; i < TREE_COUNT; i++) {
       const side = i % 2 === 0 ? 1 : -1
       const t = new THREE.Group()
       const h = 3.4 + ((i * 37) % 21) / 10
       const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, h * 0.45, 5), trunkMat)
       trunk.position.y = h * 0.22
-      const leaves = new THREE.Mesh(new THREE.IcosahedronGeometry(h * 0.42, 0), leafMat)
+      const leaves = new THREE.Mesh(new THREE.IcosahedronGeometry(h * 0.42, 0), this.leafMaterial)
       leaves.position.y = h * 0.62
       t.add(trunk, leaves)
       t.position.set(0, 0.7, side * (BANK_Z + 2 + ((i * 53) % 70) / 10))
@@ -379,6 +409,11 @@ export class World {
     // ── 랜드마크 ────────────────────────────────────────────
     this.scene.add(this.landmarkGroup)
     this.buildLandmarks()
+
+    // ── 날씨 ────────────────────────────────────────────────
+    this.weather = new WeatherSystem(weatherSeed, course.durationSec)
+    this.scene.add(this.weather.root)
+    this.applyWeather(this.weather.state)
   }
 
   private buildScenery() {
@@ -419,12 +454,12 @@ export class World {
       })
     }
 
-    const cloudMaterial = new THREE.MeshBasicMaterial({
+    this.cloudMaterial = new THREE.MeshBasicMaterial({
       color: '#f6fbff', transparent: true, opacity: 0.48, depthWrite: false,
     })
     const cloudSpan = CLOUD_COUNT * 86
     layout.clouds.forEach((item, index) => {
-      const cloud = createCloud(cloudMaterial)
+      const cloud = createCloud(this.cloudMaterial)
       const y = 22 + (index % 3) * 4 + item.scale
       cloud.position.set(0, y, item.z)
       cloud.scale.setScalar(item.scale)
@@ -474,6 +509,35 @@ export class World {
     }
   }
 
+  /** 비·눈·바람 입자만 카메라 기준 볼륨에 붙인다. */
+  attachWeatherToCamera(camera: THREE.PerspectiveCamera) {
+    if (camera.parent !== this.scene) this.scene.add(camera)
+    camera.add(this.weather.precipitationRoot)
+  }
+
+  private applyWeather(weather: WeatherBlend) {
+    const appearance = resolveWeatherAppearance(
+      this.baseWeatherPalette, weather, this.weatherAppearance,
+    )
+    this.skyUniforms.uTop.value.copy(appearance.skyTop)
+    this.skyUniforms.uBottom.value.copy(appearance.skyBottom)
+    this.fog.color.copy(appearance.skyBottom)
+    this.fog.near = appearance.fogNear
+    this.fog.far = appearance.fogFar
+    this.sun.intensity = appearance.sunIntensity
+    this.hemi.intensity = appearance.hemiIntensity
+    this.hemi.color.copy(appearance.skyTop)
+    this.hemi.groundColor.copy(appearance.water)
+    this.ambient.intensity = appearance.ambientIntensity
+    this.cloudMaterial.color.copy(appearance.cloud)
+    this.cloudMaterial.opacity = appearance.cloudOpacity
+    this.bankMaterial.color.copy(appearance.land)
+    this.leafMaterial.color.copy(appearance.land)
+    for (const material of this.landmarkLeafMaterials) material.color.copy(appearance.land)
+    this.water.setPalette(appearance.water, appearance.waterDeep)
+    this.water.setWeather(weather.windStrength, weather.base.rain)
+  }
+
   private buildLandmarks() {
     const p = this.course.venue.palette
     const mat = new THREE.MeshStandardMaterial({ color: p.landmark, flatShading: true, roughness: 0.8 })
@@ -516,6 +580,7 @@ export class World {
           const leafMat = new THREE.MeshStandardMaterial({
             color: this.course.venue.palette.land, flatShading: true,
           })
+          this.landmarkLeafMaterials.push(leafMat)
           for (let i = 0; i < 7; i++) {
             const h = 5 + ((i * 41) % 30) / 10
             const cone = new THREE.Mesh(new THREE.ConeGeometry(h * 0.34, h, 6), leafMat)
@@ -542,8 +607,16 @@ export class World {
    * @param distance 코스 진행 거리 (m)
    * @param total    코스 전체 예상 거리 (m) — 랜드마크 배치 기준
    */
-  update(timeSec: number, distance: number, total: number, cameraX: number) {
-    this.water.update(timeSec, distance)
+  update(
+    animationTimeSec: number,
+    elapsedSec: number,
+    distance: number,
+    total: number,
+    cameraX: number,
+  ) {
+    const weather = this.weather.update(animationTimeSec, elapsedSec)
+    this.applyWeather(weather)
+    this.water.update(animationTimeSec, distance)
     this.sky.position.x = cameraX
 
     // 나무: 일정 간격으로 반복시키고 뒤로 흘린다
@@ -551,30 +624,40 @@ export class World {
     for (let i = 0; i < this.trees.length; i++) {
       const base = Math.floor(i / 2) * TREE_SPACING
       this.trees[i]!.position.x = wrappedLoopX(base, distance, span, -span * 0.35)
+      this.trees[i]!.rotation.z = Math.sin(animationTimeSec * 1.5 + i * 0.73)
+        * weather.windStrength * 0.038
     }
 
     // 응원객은 강둑을 따라 반복되고, 팔을 든 채 가볍게 점프한다
     for (const node of this.spectators) {
       node.obj.position.x = wrappedLoopX(node.baseX, distance, node.span, -68)
-      node.obj.position.y = node.baseY + Math.max(0, Math.sin(timeSec * 3.2 + node.phase)) * 0.055
+      node.obj.position.y = node.baseY
+        + Math.max(0, Math.sin(animationTimeSec * 3.2 + node.phase)) * 0.055
       node.obj.position.z = node.baseZ
-      node.obj.rotation.z = Math.sin(timeSec * 2.7 + node.phase) * 0.025
+      node.obj.rotation.z = Math.sin(animationTimeSec * 2.7 + node.phase) * 0.025
+        + Math.sin(animationTimeSec * 1.2 + node.phase) * weather.windStrength * 0.018
     }
 
     // 오리는 물 위를 천천히 헤엄치며 위아래로 떠오른다
     for (const node of this.ducks) {
-      node.obj.position.x = wrappedLoopX(node.baseX, distance - timeSec * 0.32, node.span, -72)
-      node.obj.position.y = node.baseY + Math.sin(timeSec * 2.1 + node.phase) * 0.035
-      node.obj.position.z = node.baseZ + Math.sin(timeSec * 0.55 + node.phase) * 0.24
-      node.obj.rotation.z = Math.sin(timeSec * 1.35 + node.phase) * 0.035
+      node.obj.position.x = wrappedLoopX(
+        node.baseX, distance - animationTimeSec * 0.32, node.span, -72,
+      )
+      node.obj.position.y = node.baseY + Math.sin(animationTimeSec * 2.1 + node.phase) * 0.035
+      node.obj.position.z = node.baseZ + Math.sin(animationTimeSec * 0.55 + node.phase) * 0.24
+      node.obj.rotation.z = Math.sin(animationTimeSec * 1.35 + node.phase) * 0.035
     }
 
     // 구름은 먼 배경답게 지상보다 느리게 흘러 원근감을 만든다
     for (const node of this.clouds) {
       node.obj.position.x = wrappedLoopX(
-        node.baseX, distance * 0.12 - timeSec * 0.5, node.span, -145,
+        node.baseX,
+        distance * 0.12 - animationTimeSec * (0.5 + weather.windStrength * 2.1),
+        node.span,
+        -145,
       )
-      node.obj.position.y = node.baseY + Math.sin(timeSec * 0.16 + node.phase) * 0.32
+      node.obj.position.y = node.baseY - weather.cloudiness * 1.8
+        + Math.sin(animationTimeSec * 0.16 + node.phase) * 0.32
       node.obj.position.z = node.baseZ
     }
 
@@ -582,7 +665,7 @@ export class World {
     for (const node of this.bankProps) {
       node.obj.position.x = wrappedLoopX(node.baseX, distance, node.span, -82)
       node.obj.position.y = node.baseY + (node.animated
-        ? Math.sin(timeSec * 1.4 + node.phase) * 0.018
+        ? Math.sin(animationTimeSec * 1.4 + node.phase) * 0.018
         : 0)
       node.obj.position.z = node.baseZ
     }

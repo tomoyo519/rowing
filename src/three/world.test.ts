@@ -50,7 +50,9 @@ describe('강변 배경 배치', () => {
     const before: THREE.Object3D[] = []
     world.scene.traverse(node => before.push(node))
 
-    for (const distance of [0, 250, 5_000, 20_000]) world.update(12.5, distance, 10_000, 0)
+    for (const [index, distance] of [0, 250, 5_000, 20_000].entries()) {
+      world.update(12.5 + index, index * 180, distance, 10_000, 0)
+    }
 
     const after: THREE.Object3D[] = []
     world.scene.traverse(node => {
@@ -59,6 +61,11 @@ describe('강변 배경 배치', () => {
     })
     expect(after).toEqual(before)
     expect(after.filter(node => node instanceof THREE.Mesh).length).toBeLessThan(230)
+    expect(after.filter(node => (
+      node instanceof THREE.Mesh
+      || node instanceof THREE.Points
+      || node instanceof THREE.LineSegments
+    )).length).toBeLessThan(240)
     world.dispose()
   })
 })

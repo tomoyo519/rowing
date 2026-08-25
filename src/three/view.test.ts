@@ -1,8 +1,10 @@
 import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
+import { COURSES } from '../game/courses'
 import { StrokeEngine } from '../game/stroke'
 import { COLORS_PACE, COLORS_PLAYER, Rig } from './rig'
 import { PACE_LANE_Z, paceStrokeRate } from './view'
+import { World } from './world'
 
 describe('페이스메이커 레이스 배치', () => {
   it('동률이어도 서로 다른 모든 스트로크 위상에서 두 리그가 겹치지 않는다', () => {
@@ -32,5 +34,23 @@ describe('페이스메이커 레이스 배치', () => {
     expect(paceStrokeRate(0.8)).toBe(18)
     expect(paceStrokeRate(1)).toBe(24)
     expect(paceStrokeRate(1.4)).toBe(36)
+  })
+
+  it('두 보트와 날씨를 합쳐도 iPad용 drawable 예산을 넘지 않는다', () => {
+    const world = new World(COURSES[0]!)
+    const player = new Rig(COLORS_PLAYER)
+    const pace = new Rig(COLORS_PACE, 0.82)
+    world.scene.add(player.group, pace.group)
+
+    const drawables: THREE.Object3D[] = []
+    world.scene.traverse(node => {
+      if (
+        node instanceof THREE.Mesh
+        || node instanceof THREE.Points
+        || node instanceof THREE.LineSegments
+      ) drawables.push(node)
+    })
+    expect(drawables.length).toBeLessThan(290)
+    world.dispose()
   })
 })

@@ -12,6 +12,8 @@ export class Water {
     uTime: { value: 0 },
     uScroll: { value: 0 },
     uDeep: { value: new THREE.Color('#0d2a3d') },
+    uWind: { value: 0 },
+    uRain: { value: 0 },
   }
 
   constructor(color: THREE.ColorRepresentation, deep: THREE.ColorRepresentation) {
@@ -28,24 +30,30 @@ export class Water {
       shader.uniforms.uTime = this.uniforms.uTime
       shader.uniforms.uScroll = this.uniforms.uScroll
       shader.uniforms.uDeep = this.uniforms.uDeep
+      shader.uniforms.uWind = this.uniforms.uWind
+      shader.uniforms.uRain = this.uniforms.uRain
 
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', /* glsl */`
           #include <common>
           uniform float uTime;
           uniform float uScroll;
+          uniform float uWind;
+          uniform float uRain;
           varying float vWave;
         `)
         .replace('#include <begin_vertex>', /* glsl */`
           #include <begin_vertex>
           float wx = transformed.x + uScroll;
           float wz = transformed.z;
-          // 조정 수로는 잔잔하다 — 파고는 최대 7cm 정도로 억제
+          float windScale = 1.0 + uWind * 0.35;
+          // 조정 수로는 잔잔하다 — 강풍과 비가 와도 파고는 약 10cm 아래로 억제
           float w =
-              sin(wx * 0.32 + uTime * 1.15) * 0.030
-            + sin(wx * 0.87 - wz * 0.41 + uTime * 1.75) * 0.016
-            + sin(wz * 0.55 + uTime * 0.72) * 0.020
-            + sin(wx * 2.1 + wz * 1.3 - uTime * 2.6) * 0.007;
+              sin(wx * 0.32 + uTime * 1.15) * 0.030 * windScale
+            + sin(wx * 0.87 - wz * 0.41 + uTime * 1.75) * 0.016 * windScale
+            + sin(wz * 0.55 + uTime * 0.72) * 0.020 * windScale
+            + sin(wx * 2.1 + wz * 1.3 - uTime * 2.6) * 0.007
+            + sin(wx * 7.8 - wz * 5.6 + uTime * 8.4) * 0.003 * uRain;
           transformed.y += w;
           vWave = w;
         `)
@@ -79,5 +87,11 @@ export class Water {
   setPalette(color: THREE.ColorRepresentation, deep: THREE.ColorRepresentation) {
     ;(this.mesh.material as THREE.MeshStandardMaterial).color.set(color)
     this.uniforms.uDeep.value.set(deep)
+  }
+
+  setWeather(wind: number, rain: number) {
+    this.uniforms.uWind.value = Math.max(0, Math.min(1, wind))
+    this.uniforms.uRain.value = Math.max(0, Math.min(1, rain))
+    ;(this.mesh.material as THREE.MeshStandardMaterial).roughness = 0.5 + rain * 0.16
   }
 }
