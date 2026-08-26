@@ -59,6 +59,10 @@
     color: var(--muted); font-size: 13.5px; line-height: 1.6;
   }
   .err { color: #ff8b73; font-size: 14px; min-height: 20px; margin-top: 14px; }
+  .ble-help {
+    margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5;
+    text-align: center;
+  }
   .ble-log {
     position: fixed; z-index: 20; left: 50%; bottom: calc(var(--safe-b) + 18px);
     width: min(560px, calc(100vw - 28px)); transform: translateX(-50%);
@@ -103,7 +107,37 @@
   .ble-log-open[hidden] { display: none; }
 
   /* ── 코스 선택 ── */
-  #screen-course .pad { overflow-y: auto; -webkit-overflow-scrolling: touch; max-width: 900px; margin: 0 auto; width: 100%; }
+  /*
+   * 코스 목록은 스크롤되고 CTA는 하단에 고정된다.
+   * .screen이 이미 flex column이라, .pad가 남은 높이를 먹고 .cta-bar는 밀려나지 않는다.
+   * min-height:0 이 없으면 flex 자식이 콘텐츠 높이만큼 늘어나 스크롤이 안 생긴다.
+   */
+  #screen-course .pad {
+    flex: 1; min-height: 0;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+    max-width: 900px; margin: 0 auto; width: 100%;
+    padding-bottom: 20px;
+  }
+  .cta-bar {
+    flex: none;
+    padding: 13px 0 calc(var(--safe-b) + 15px);
+    background: rgba(11, 20, 32, .93);
+    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    border-top: 1px solid var(--line);
+  }
+  /* .pad와 같은 max-width + 같은 좌우 여백이라야 버튼이 카드 그리드와 정확히 맞는다 */
+  .cta-inner {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    max-width: 900px; margin: 0 auto; width: 100%;
+    padding: 0 28px;
+  }
+  /* 좁은 화면: 시작이 전체 폭으로 위에, 보조 버튼 둘이 아래 한 줄 */
+  .cta-inner #btn-start { flex: 1 1 100%; }
+  .cta-inner .btn.ghost { flex: 1 1 0; }
+  /* 넓은 화면: 한 줄에 나란히, 주 버튼을 오른쪽에 크게 */
+  @media (min-width: 620px) {
+    .cta-inner #btn-start { flex: 1.7 1 0; order: 3; }
+  }
   .group-head {
     font-size: 12px; font-weight: 700; color: var(--accent); letter-spacing: .14em;
     margin: 24px 0 11px;
@@ -324,6 +358,42 @@
   .fb-bar { height: 3px; background: rgba(255,255,255,.1); margin: 0 -24px; }
   .fb-bar i { display: block; height: 100%; background: rgba(255,255,255,.4); width: 100%; }
 
+  /* ── 연결 끊김 배너 ── */
+  .linkbar {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    top: calc(var(--safe-t) + 96px);
+    display: none; align-items: center; gap: 11px;
+    background: rgba(48,17,12,.92); backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,90,60,.55); border-radius: 12px;
+    padding: 10px 17px; max-width: calc(100% - 32px); z-index: 6;
+  }
+  .linkbar.on { display: flex; }
+  .linkbar .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+    flex: none; animation: linkpulse 1.1s ease-in-out infinite;
+  }
+  @keyframes linkpulse { 0%,100% { opacity: 1 } 50% { opacity: .2 } }
+  .linkbar .txt { font-size: 13px; font-weight: 700; }
+  .linkbar .sub2 { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  /* ── 고스트 갭 ── */
+  .ghost-gap {
+    display: none; align-items: baseline; gap: 6px;
+    margin-top: 7px; padding-top: 7px;
+    border-top: 1px solid rgba(255,255,255,.09);
+  }
+  .ghost-gap.on { display: flex; }
+  .ghost-gap .gk { font-size: 10.5px; color: #e0a33a; letter-spacing: .06em; }
+  .ghost-gap .gv { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; margin-left: auto; }
+  .ghost-gap .gv.ahead { color: var(--accent-2); }
+  .ghost-gap .gv.behind { color: #ff8b73; }
+
+  .course .pb {
+    font-size: 11px; color: #e0a33a; font-weight: 700;
+    font-variant-numeric: tabular-nums; margin: -4px 0 9px;
+  }
+
   .landmark {
     position: absolute; left: 50%; transform: translateX(-50%);
     top: 46%;
@@ -463,6 +533,9 @@
     <h1>makeRowing</h1>
     <p class="sub">FTMS 로잉머신을 연결하고 코스를 저어보세요.</p>
     <button id="btn-ble" class="btn">로잉머신 연결</button>
+    <div style="height:10px"></div>
+    <button id="btn-ble-all" class="btn ghost">주변 Bluetooth 기기 전체 보기</button>
+    <div class="ble-help">iPad에서는 기본 연결 버튼도 전체 기기 선택창을 엽니다. 목록에서 로잉머신 이름을 선택하세요.</div>
     <div style="height:12px"></div>
     <button id="btn-sim" class="btn ghost">시뮬레이터로 둘러보기</button>
     <div style="height:12px"></div>
@@ -484,10 +557,11 @@
 
     <h2>코스</h2>
     <div class="courses" id="courses"></div>
+  </div>
 
-    <button id="btn-start" class="btn">시작</button>
-    <div style="height:12px"></div>
-    <div class="row">
+  <div class="cta-bar">
+    <div class="cta-inner">
+      <button id="btn-start" class="btn">시작</button>
       <button id="btn-history-2" class="btn ghost">기록</button>
       <button id="btn-back" class="btn ghost">연결 화면으로</button>
     </div>
@@ -533,6 +607,10 @@
           <span id="s-remaining">00:00 남음</span>
           <span class="g" id="s-gap">0m</span>
         </div>
+        <div class="ghost-gap" id="ghost-gap">
+          <span class="gk">내 최고 기록</span>
+          <span class="gv" id="s-ghost-gap">0m</span>
+        </div>
       </div>
     </aside>
 
@@ -549,6 +627,13 @@
       <div class="mini-caption" id="mini-caption">0.0 / 0.0 km</div>
     </div>
 
+    <div class="linkbar" id="linkbar">
+      <span class="dot"></span>
+      <div>
+        <div class="txt" id="link-txt">연결이 끊어졌습니다</div>
+        <div class="sub2" id="link-sub">다시 연결하는 중 · 기록 시간은 멈춰 있습니다</div>
+      </div>
+    </div>
     <div class="landmark" id="landmark"></div>
     <div class="cam-toast" id="cam-toast"></div>
     <div class="ble-race-alert" id="ble-race-alert"></div>
@@ -560,6 +645,7 @@
     <div class="simctl" id="simctl">
       <label>강도</label>
       <input type="range" id="sim-intensity" min="0" max="100" value="55" />
+      <button class="icon-btn" id="sim-drop" title="연결 끊김 테스트" style="width:auto;padding:0 11px;font-size:12px">끊김 테스트</button>
     </div>
   </div>
   <div class="fb" id="feedback">
@@ -585,11 +671,11 @@
   </div>
 </section>
 
-<button class="ble-log-open" id="btn-log-open" type="button" hidden>BLE 로그 <span id="ble-log-count">0</span></button>
+<button class="ble-log-open" id="btn-log-open" type="button" hidden>연결 기록 보기 (<span id="ble-log-count">0</span>개)</button>
 <section class="ble-log" id="ble-log-panel" hidden aria-live="polite" aria-label="Bluetooth 연결 진단 로그">
   <div class="ble-log-head">
     <div>
-      <div class="ble-log-title">Bluetooth 연결 진단</div>
+      <div class="ble-log-title">Bluetooth 연결 진단 · 숫자는 오류번호가 아닌 기록 개수입니다</div>
       <div class="ble-log-state" id="ble-log-state">연결 단계가 여기에 표시됩니다</div>
     </div>
     <div class="ble-log-actions">

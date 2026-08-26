@@ -51,6 +51,24 @@ export class MockSource implements RowerSource {
     return () => this.statusFns.delete(fn)
   }
 
+  /**
+   * 개발용: 연결이 끊겼다 돌아오는 상황을 재현한다.
+   * 실기기 없이 끊김 배너·세션 일시정지·재연결 복귀를 확인할 수 있다.
+   */
+  simulateDropout(ms = 7000) {
+    if (this.timer !== null) window.clearInterval(this.timer)
+    this.timer = null
+    this.status = 'reconnecting'
+    for (const fn of this.statusFns) fn('reconnecting', '시뮬레이터')
+
+    window.setTimeout(() => {
+      this.lastAt = performance.now()
+      this.timer = window.setInterval(() => this.tick(), 500)
+      this.status = 'connected'
+      for (const fn of this.statusFns) fn('connected', '시뮬레이터')
+    }, ms)
+  }
+
   private reset() {
     this.distance = 0; this.strokeCount = 0; this.strokePhase = 0
     this.elapsed = 0; this.energy = 0

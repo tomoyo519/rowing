@@ -6,6 +6,7 @@ import type { RowerSample, RowerSource, SourceStatus } from '../types'
 export const DEBUG_RAW = false
 
 export type BleDiagnosticLevel = 'info' | 'success' | 'warning' | 'error'
+export type BleScanMode = 'ftms' | 'all'
 
 export interface BleDiagnosticEntry {
   at: number
@@ -87,6 +88,11 @@ export class FtmsSource implements RowerSource {
   private connecting = false
   private manualDisconnect = false
   private stage = 'idle'
+  /** 한 번 연결에 성공한 뒤 사용자가 직접 끊기 전까지 true — 자동 재연결의 조건 */
+  private wantConnected = false
+  private reconnectTimer: number | null = null
+  private reconnectAttempts = 0
+
   private onDisconnected = () => {
     this.clearFirstPacketTimer()
     this.log(
@@ -95,11 +101,18 @@ export class FtmsSource implements RowerSource {
       this.manualDisconnect ? '사용자가 Bluetooth 연결을 종료했습니다.' : '로잉머신 연결이 예기치 않게 끊어졌습니다.',
       this.device?.name ?? undefined,
     )
-    this.setStatus('disconnected')
+    // 세션 도중에 끊긴 것이면 스스로 다시 붙는다.
+    // 한 번 허용된 기기는 재연결에 사용자 제스처가 필요 없다 — 이게 자동 재연결이 가능한 이유다.
+    if (this.wantConnected && !this.manualDisconnect && this.device) {
+      this.setStatus('reconnecting', this.device.name ?? undefined)
+      this.scheduleReconnect()
+    } else {
+      this.setStatus('disconnected')
+    }
   }
 
   /** ⚠️ 반드시 사용자 클릭 핸들러 안에서 호출할 것. Web Bluetooth는 user gesture를 요구한다. */
-  async connect(): Promise<void> {
+  async connect(scanMode: BleScanMode = 'ftms'): Promise<void> {
     if (this.connecting || this.status === 'connected') {
       this.log('warning', 'connect.duplicate', '이미 연결 중이거나 연결되어 있어 중복 요청을 건너뜁니다.')
       return
@@ -108,7 +121,12 @@ export class FtmsSource implements RowerSource {
     this.manualDisconnect = false
     this.packetCount = 0
     this.stage = 'preflight'
-    this.log('info', 'attempt.start', 'Bluetooth 연결 시도를 시작합니다.')
+    this.log(
+      'info', 'attempt.start',
+      scanMode === 'all'
+        ? 'Bluetooth 연결 시도를 시작합니다. 주변 기기를 모두 검색합니다.'
+        : 'Bluetooth 연결 시도를 시작합니다. FTMS 로잉머신을 검색합니다.',
+    )
     this.log(
       navigator.bluetooth ? 'success' : 'error',
       'preflight.bluetooth',
@@ -138,11 +156,35 @@ export class FtmsSource implements RowerSource {
     this.setStatus('connecting')
     try {
       this.stage = 'chooser'
-      this.log('info', 'chooser.open', '기기 선택 창을 요청했습니다. FTMS 로잉머신만 표시됩니다.')
-      this.device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [FTMS_SERVICE] }],
-        optionalServices: [HEART_RATE_SERVICE],
-      })
+      this.log(
+        'info', `chooser.request.${scanMode}`,
+        scanMode === 'all'
+          ? '주변 Bluetooth 기기 선택창 표시를 요청했습니다. 목록에서 로잉머신을 선택하세요.'
+          : 'FTMS 로잉머신 선택창 표시를 요청했습니다.',
+      )
+      const chooserWaitTimer = window.setTimeout(() => {
+        this.log(
+          'warning', 'chooser.waiting',
+          '7초가 지나도 기기 선택이 완료되지 않았습니다.',
+          '선택창이 보이지 않으면 Bluefy의 Bluetooth 권한을 확인한 뒤 페이지를 새로고침하세요. Safari나 ChatGPT 내부 브라우저에서는 선택창이 뜨지 않습니다.',
+        )
+      }, 7_000)
+      try {
+        this.device = await navigator.bluetooth.requestDevice(
+          scanMode === 'all'
+            ? {
+                acceptAllDevices: true,
+                // 전체 검색에서는 선택 뒤 접근할 서비스를 반드시 optionalServices에 선언해야 한다.
+                optionalServices: [FTMS_SERVICE, HEART_RATE_SERVICE],
+              }
+            : {
+                filters: [{ services: [FTMS_SERVICE] }],
+                optionalServices: [HEART_RATE_SERVICE],
+              },
+        )
+      } finally {
+        window.clearTimeout(chooserWaitTimer)
+      }
       this.log(
         'success', 'chooser.selected',
         `기기를 선택했습니다: ${this.device.name ?? '이름 없는 기기'}`,
@@ -197,6 +239,8 @@ export class FtmsSource implements RowerSource {
       }, 8_000)
 
       this.stage = 'connected'
+      this.wantConnected = true
+      this.reconnectAttempts = 0
       this.setStatus('connected', this.device.name ?? undefined)
       this.log('success', 'connected', 'Bluetooth 연결 절차를 완료했습니다.')
     } catch (e) {
@@ -210,6 +254,8 @@ export class FtmsSource implements RowerSource {
 
   async disconnect(): Promise<void> {
     this.manualDisconnect = true
+    this.wantConnected = false
+    this.cancelReconnect()
     this.clearFirstPacketTimer()
     this.log('info', 'cleanup.start', 'Bluetooth 연결을 정리합니다.')
     this.char?.removeEventListener('characteristicvaluechanged', this.handleValue)
@@ -229,6 +275,57 @@ export class FtmsSource implements RowerSource {
     this.device = null
     this.setStatus('disconnected')
     this.log('success', 'cleanup.done', 'Bluetooth 연결 정리를 마쳤습니다.')
+  }
+
+  // ── 자동 재연결 ──────────────────────────────────────────
+
+  /** 재연결 시도 상한. 약 3분간 시도하고 포기한다. */
+  private static readonly MAX_RECONNECT = 40
+
+  private scheduleReconnect() {
+    this.cancelReconnect()
+    // 지수 백오프, 5초에서 상한. 세션 중이라 너무 느긋하면 곤란하다.
+    const delay = Math.min(800 * 2 ** Math.min(this.reconnectAttempts, 3), 5_000)
+    this.log(
+      'info', 'reconnect.scheduled',
+      `${(delay / 1000).toFixed(1)}초 뒤 재연결을 시도합니다. (${this.reconnectAttempts + 1}번째)`,
+    )
+    this.reconnectTimer = window.setTimeout(() => void this.tryReconnect(), delay)
+  }
+
+  private cancelReconnect() {
+    if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+  }
+
+  private async tryReconnect() {
+    if (!this.wantConnected || !this.device?.gatt) return
+    this.reconnectAttempts++
+
+    try {
+      const server = await this.device.gatt.connect()
+      const service = await server.getPrimaryService(FTMS_SERVICE)
+      const char = await service.getCharacteristic(CHAR.ROWER_DATA)
+      // 이전 리스너가 남아 이중 수신되지 않게 정리하고 다시 건다
+      this.char?.removeEventListener('characteristicvaluechanged', this.handleValue)
+      this.char = char
+      char.addEventListener('characteristicvaluechanged', this.handleValue)
+      await char.startNotifications()
+
+      this.reconnectAttempts = 0
+      this.setStatus('connected', this.device.name ?? undefined)
+      this.log('success', 'reconnect.ok', '로잉머신에 다시 연결했습니다.')
+    } catch (error) {
+      const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+      if (this.reconnectAttempts >= FtmsSource.MAX_RECONNECT) {
+        this.wantConnected = false
+        this.log('error', 'reconnect.giveup', '재연결을 여러 번 시도했지만 실패했습니다.', detail)
+        this.setStatus('error', '재연결에 실패했습니다. 로잉머신 전원과 블루투스를 확인하세요.')
+        return
+      }
+      this.log('warning', 'reconnect.retry', '재연결에 실패해 다시 시도합니다.', detail)
+      this.scheduleReconnect()
+    }
   }
 
   onSample(fn: (s: RowerSample) => void) {

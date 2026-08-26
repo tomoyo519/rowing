@@ -40,6 +40,14 @@ export class RowingMetronome {
   }
 
   get isMuted() { return this.muted }
+
+  /**
+   * 이벤트 큐(AudioCues)가 같은 오디오 그래프를 쓰도록 노출한다.
+   * 컨텍스트를 두 개 만들면 iOS에서 하나가 잠기는 일이 생긴다.
+   */
+  get audioNodes(): { ctx: AudioContext; master: GainNode } | null {
+    return this.context && this.master ? { ctx: this.context, master: this.master } : null
+  }
   get isSupported() { return typeof window !== 'undefined' && 'AudioContext' in window }
 
   /** iOS의 사용자 제스처 제한 때문에 시작 버튼의 첫 await 전에 호출해야 한다. */

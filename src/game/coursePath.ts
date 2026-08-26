@@ -28,6 +28,11 @@ export interface LocalPathPoint extends PathPoint {
 /** 플레이어와 페이스메이커를 수로 중심에 대칭으로 둔다. */
 export const PLAYER_LANE_OFFSET = 3.2
 export const PACE_LANE_OFFSET = -3.2
+/**
+ * 고스트 레인. 플레이어를 가운데 두고 페이스 보트 반대편에 세운다.
+ * 페이스 보트(-6.4)만큼 벌리면 세 척이 화면 폭을 넘어가서 조금 좁혔다.
+ */
+export const GHOST_LANE_OFFSET = 8.6
 
 function hashString(value: string) {
   let hash = 2166136261

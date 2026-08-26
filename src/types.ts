@@ -27,7 +27,14 @@ export interface RowerSample extends RowerData {
   at: number
 }
 
-export type SourceStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error'
+export type SourceStatus =
+  | 'idle'
+  | 'connecting'
+  /** 예기치 않게 끊겨 자동 재연결을 시도하는 중 */
+  | 'reconnecting'
+  | 'connected'
+  | 'disconnected'
+  | 'error'
 
 /**
  * 데이터 공급원 공통 인터페이스.

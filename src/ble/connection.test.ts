@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { diagnoseBluetoothError, FtmsSource } from './connection'
-import { CHAR } from './ftms'
+import { CHAR, FTMS_SERVICE, HEART_RATE_SERVICE } from './ftms'
 
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
-function stubBrowser(requestDevice: () => Promise<BluetoothDevice>) {
+function stubBrowser(requestDevice: (options?: RequestDeviceOptions) => Promise<BluetoothDevice>) {
   vi.stubGlobal('navigator', {
     bluetooth: { requestDevice },
     userAgent: 'makeRowing BLE test browser',
@@ -80,7 +80,8 @@ describe('Bluetooth 오류 진단', () => {
 
   it('성공 연결의 chooser부터 notifications까지 단계 코드를 순서대로 남긴다', async () => {
     const { device } = successfulDevice()
-    stubBrowser(async () => device)
+    const requestDevice = vi.fn(async () => device)
+    stubBrowser(requestDevice)
     const source = new FtmsSource()
     const codes: string[] = []
     source.onDiagnostic(entry => codes.push(entry.code))
@@ -88,14 +89,57 @@ describe('Bluetooth 오류 진단', () => {
     await source.connect()
     expect(codes).toEqual([
       'attempt.start', 'preflight.bluetooth', 'preflight.secure',
-      'chooser.open', 'chooser.selected',
+      'chooser.request.ftms', 'chooser.selected',
       'gatt.connect.start', 'gatt.connect.ok',
       'service.ftms.start', 'service.ftms.ok',
       'feature.read.start', 'feature.read.ok',
       'rower-char.start', 'rower-char.ok',
       'notifications.start', 'notifications.ok', 'connected',
     ])
+    expect(requestDevice).toHaveBeenCalledWith({
+      filters: [{ services: [FTMS_SERVICE] }],
+      optionalServices: [HEART_RATE_SERVICE],
+    })
     expect(source.status).toBe('connected')
+    await source.disconnect()
+  })
+
+  it('전체 검색은 선택창에 모든 BLE 기기를 요청하고 FTMS 접근 권한을 남긴다', async () => {
+    const { device } = successfulDevice()
+    const requestDevice = vi.fn(async () => device)
+    stubBrowser(requestDevice)
+    const source = new FtmsSource()
+    const codes: string[] = []
+    source.onDiagnostic(entry => codes.push(entry.code))
+
+    await source.connect('all')
+
+    expect(requestDevice).toHaveBeenCalledWith({
+      acceptAllDevices: true,
+      optionalServices: [FTMS_SERVICE, HEART_RATE_SERVICE],
+    })
+    expect(codes).toContain('chooser.request.all')
+    await source.disconnect()
+  })
+
+  it('선택창 응답이 늦으면 Bluefy 권한과 새로고침 안내를 로그에 남긴다', async () => {
+    vi.useFakeTimers()
+    const { device } = successfulDevice()
+    let finishSelection!: (device: BluetoothDevice) => void
+    stubBrowser(() => new Promise(resolve => { finishSelection = resolve }))
+    const source = new FtmsSource()
+    const messages: { code: string; detail?: string }[] = []
+    source.onDiagnostic(entry => messages.push({ code: entry.code, detail: entry.detail }))
+
+    const connecting = source.connect('all')
+    await vi.advanceTimersByTimeAsync(7_000)
+
+    expect(messages).toContainEqual(expect.objectContaining({
+      code: 'chooser.waiting',
+      detail: expect.stringContaining('Bluefy'),
+    }))
+    finishSelection(device)
+    await connecting
     await source.disconnect()
   })
 
@@ -143,6 +187,31 @@ describe('Bluetooth 오류 진단', () => {
 
     expect(codes.filter(code => code === 'packet.first')).toHaveLength(1)
     expect(samples).toEqual([26, 26])
+    await source.disconnect()
+  })
+
+  it('성공 뒤 예기치 않게 끊기면 선택창 없이 기존 기기에 자동 재연결한다', async () => {
+    vi.useFakeTimers()
+    const { device } = successfulDevice()
+    const requestDevice = vi.fn(async () => device)
+    stubBrowser(requestDevice)
+    const source = new FtmsSource()
+    const statuses: string[] = []
+    const codes: string[] = []
+    source.onStatus(status => statuses.push(status))
+    source.onDiagnostic(entry => codes.push(entry.code))
+
+    await source.connect()
+    device.dispatchEvent(new Event('gattserverdisconnected'))
+
+    expect(statuses.at(-1)).toBe('reconnecting')
+    expect(codes).toContain('reconnect.scheduled')
+    await vi.advanceTimersByTimeAsync(800)
+
+    expect(statuses.at(-1)).toBe('connected')
+    expect(codes).toContain('reconnect.ok')
+    expect(requestDevice).toHaveBeenCalledTimes(1)
+    expect(device.gatt!.connect).toHaveBeenCalledTimes(2)
     await source.disconnect()
   })
 })

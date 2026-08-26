@@ -1,18 +1,20 @@
-import { FtmsSource, type BleDiagnosticEntry } from './ble/connection'
+import { FtmsSource, type BleDiagnosticEntry, type BleScanMode } from './ble/connection'
 import { MockSource } from './sim/mockRower'
 import {
   COURSES, PACE_TIERS, courseGroups, projectedDistance, courseRangeLabel,
   type Course, type PaceTier,
 } from './game/courses'
 import { profileSamples } from './game/profile'
-import { Session } from './game/state'
+import { Session, type StallReason } from './game/state'
 import { buildFeedback } from './game/feedback'
-import { saveRecord, thinCurve, type SessionRecord } from './game/history'
+import { saveRecord, thinCurve, personalBest, type SessionRecord } from './game/history'
 import { FeedbackModal } from './ui/feedbackModal'
 import { renderHistory } from './ui/historyScreen'
 import { View } from './three/view'
 import { formatSplit, formatSplitShort, formatClock } from './game/physics'
 import { RowingMetronome } from './audio/metronome'
+import { AudioCues } from './audio/cues'
+import { loadGhost } from './game/ghost'
 import {
   createCoursePath,
   localPathPoint,
@@ -111,24 +113,35 @@ $('btn-log-close').addEventListener('click', () => { $('ble-log-panel').hidden =
 
 // ── 연결 화면 ───────────────────────────────────────────────
 const note = $('connect-note')
+const isIPad = /iPad/i.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
 if (!navigator.bluetooth) {
   note.innerHTML = '이 브라우저는 Web Bluetooth를 지원하지 않습니다.<br>' +
-    'iPad에서는 <b>Bluefy</b> 브라우저로 이 주소를 열어주세요. ' +
+    'iPad에서는 <b>Bluefy 앱을 먼저 열고, Bluefy 주소창에 이 사이트 주소를 직접 입력</b>하세요. ' +
+    'Safari나 ChatGPT 안에서 연 링크로는 기기 선택창이 뜨지 않습니다.<br>' +
     '데스크톱은 Chrome/Edge를 쓰면 됩니다.<br>시뮬레이터는 어디서든 동작합니다.'
 } else if (!window.isSecureContext) {
   note.innerHTML = '현재 <b>HTTPS가 아닙니다.</b> Web Bluetooth는 secure context에서만 동작합니다.<br>' +
     '<code>npm run tunnel</code>로 HTTPS 주소를 만들어 접속하세요.'
 } else {
-  note.innerHTML = '로잉머신 전원을 켜고 다른 앱과의 블루투스 연결을 먼저 해제하세요. ' +
-    'FTMS 기기는 보통 한 번에 한 대만 연결됩니다.'
+  note.innerHTML = (isIPad
+    ? '<b>정상 동작:</b> 연결 버튼을 누르면 주변 Bluetooth 기기 선택창이 떠야 합니다.<br>' +
+      'Bluefy 주소창에서 직접 연 뒤, iPad 설정 → 개인정보 보호 및 보안 → Bluetooth에서 Bluefy 권한을 허용하세요.<br>'
+    : '') +
+    '로잉머신 전원을 켜고 다른 앱과의 블루투스 연결을 먼저 해제하세요. ' +
+    '목록에 로잉머신이 없으면 <b>주변 Bluetooth 기기 전체 보기</b>를 눌러보세요.'
 }
 
-$('btn-ble').addEventListener('click', async () => {
+async function connectBle(scanMode: BleScanMode) {
   const err = $('connect-err')
-  const button = $<HTMLButtonElement>('btn-ble')
+  const primary = $<HTMLButtonElement>('btn-ble')
+  const allDevices = $<HTMLButtonElement>('btn-ble-all')
+  const button = scanMode === 'all' ? allDevices : primary
+  const originalLabel = button.textContent ?? '로잉머신 연결'
   err.textContent = ''
   $('ble-log-panel').hidden = false
-  button.disabled = true
+  primary.disabled = true
+  allDevices.disabled = true
   button.textContent = '연결 확인 중…'
   const src = new FtmsSource()
   src.onDiagnostic(appendBleLog)
@@ -144,17 +157,26 @@ $('btn-ble').addEventListener('click', async () => {
     }
   })
   try {
-    await src.connect()
+    await src.connect(scanMode)
     source = src
     $('simctl').classList.remove('on')
     $('ble-log-panel').hidden = true
     goCourseSelect()
-  } catch { /* onStatus와 단계별 진단 로그가 이미 표시함 */ }
-  finally {
-    button.disabled = false
-    button.textContent = '로잉머신 연결'
+  } catch (error) {
+    if (scanMode === 'ftms' && error instanceof DOMException && error.name === 'NotFoundError') {
+      err.textContent = 'FTMS 목록에서 찾지 못했습니다. 아래 “주변 Bluetooth 기기 전체 보기”로 다시 시도하세요.'
+    }
   }
-})
+  finally {
+    primary.disabled = false
+    allDevices.disabled = false
+    button.textContent = originalLabel
+  }
+}
+
+// iPad/Bluefy는 광고 필터 호환성 차이가 있어 처음부터 전체 선택창을 여는 편이 안정적이다.
+$('btn-ble').addEventListener('click', () => void connectBle(isIPad ? 'all' : 'ftms'))
+$('btn-ble-all').addEventListener('click', () => void connectBle('all'))
 
 $('btn-sim').addEventListener('click', async () => {
   const src = new MockSource()
@@ -182,6 +204,13 @@ function renderTiers() {
     el.appendChild(b)
   }
   $('tier-hint').textContent = selectedTier.hint
+}
+
+/** 이 코스에 지난 기록이 있으면 카드에 보여준다 — 고스트가 나온다는 신호이기도 하다 */
+function pbLine(c: Course): string {
+  const pb = personalBest(c.id)
+  if (!pb) return ''
+  return `<div class="pb">내 최고 ${(pb.distance / 1000).toFixed(2)} km · ${formatSplitShort(pb.avgSplit)}/500m</div>`
 }
 
 /** 코스 강도 프로파일을 미니 그래프(SVG)로 */
@@ -228,6 +257,7 @@ function renderCourses() {
           </div>
         </div>
         ${sparkline(c)}
+        ${pbLine(c)}
         <div class="range">페이스 ${courseRangeLabel(c)}</div>
         <div class="desc">${c.description}</div>
         <div class="est">
@@ -263,6 +293,7 @@ const cv = $<HTMLCanvasElement>('cv')
 let unsub: (() => void) | null = null
 const feedbackModal = new FeedbackModal()
 const metronome = new RowingMetronome()
+const cues = new AudioCues(metronome)
 let racePath: CoursePath = createCoursePath(selectedCourse.id)
 let raceTotal = 1
 let lastMiniMapAt = -1
@@ -277,7 +308,7 @@ function syncSoundButton() {
 syncSoundButton()
 
 $('btn-sound').addEventListener('click', () => {
-  metronome.toggleMuted()
+  if (metronome.toggleMuted()) cues.stopSpeech()
   syncSoundButton()
 })
 
@@ -292,6 +323,13 @@ const CHECKPOINT = (() => {
 /** 남은 시간이 이보다 적으면 띄우지 않는다 — 곧 요약이 나온다 */
 const MIN_TAIL = 45
 let lastCheckpoint = 0
+let unsubStatus: (() => void) | null = null
+/** 구간이 바뀔 때만 소리를 내기 위한 직전 구간 이름 */
+let lastStepLabel: string | null = null
+/** 끊김 배너를 원인까지 바뀔 때 갱신하기 위한 직전 값 */
+let lastStallReason: StallReason = null
+/** 구간 전환이 강해지는 방향인지 판단하기 위한 직전 강도 */
+let lastStepIntensity = 1
 
 window.addEventListener('resize', () => view?.resize())
 window.addEventListener('orientationchange', () => setTimeout(() => view?.resize(), 150))
@@ -300,11 +338,24 @@ async function startRace() {
   if (!source) return
   // 첫 await 전에 호출되어야 iPad가 Web Audio를 사용자 제스처로 인정한다.
   void metronome.unlock()
+  cues.primeSpeech()
   metronome.stop()
-  session = new Session(selectedCourse, selectedTier.split)
+  const ghost = loadGhost(selectedCourse.id)
+  session = new Session(selectedCourse, selectedTier.split, ghost)
   unsub?.()
   unsub = source.onSample(s => session?.onSample(s))
 
+  // 레이스 중 연결 상태를 세션에 그대로 물려준다 — 끊기면 시계가 멈춘다
+  unsubStatus?.()
+  unsubStatus = source.onStatus(st => {
+    session?.setLinkDown(st !== 'connected')
+  })
+  // onStatus는 다음 변화부터 알려주므로 현재 상태도 즉시 반영한다.
+  session.setLinkDown(source.status !== 'connected')
+
+  $('ghost-gap').classList.toggle('on', ghost !== null)
+  lastStepLabel = null
+  lastStallReason = null
   lastCheckpoint = 0
   feedbackModal.reset()
   $('ble-race-alert').classList.remove('on')
@@ -322,6 +373,8 @@ async function startRace() {
   cd.style.display = 'flex'
   for (const n of ['3', '2', '1', 'ROW']) {
     cd.textContent = n
+    if (n === 'ROW') cues.go()
+    else cues.countdown()
     await sleep(700)
   }
   cd.style.display = 'none'
@@ -344,6 +397,9 @@ $('btn-cam').addEventListener('click', () => {
   camToastAt = performance.now()
   setTimeout(() => { if (performance.now() - camToastAt >= 1400) t.style.opacity = '0' }, 1500)
 })
+$('sim-drop').addEventListener('click', () => {
+  if (source instanceof MockSource) source.simulateDropout(7000)
+})
 $('sim-intensity').addEventListener('input', e => {
   if (source instanceof MockSource) {
     source.intensity = Number((e.target as HTMLInputElement).value) / 100
@@ -362,7 +418,10 @@ function frame(now: number) {
     view.render(session, now / 1000, dt)
     updateHud()
     checkFeedback()
-    if (session.phase === 'finished') showSummary()
+    if (session.phase === 'finished') {
+      if (session.metrics().progress >= 0.999) cues.finish()
+      showSummary()
+    }
   }
   requestAnimationFrame(frame)
 }
@@ -386,7 +445,9 @@ function checkFeedback() {
   // 다음 구간이 이번 구간과 다르면 예고해준다
   const now = session.metrics().step.label
   const soon = session.stepLabelAt(elapsed + 60)
-  feedbackModal.show(buildFeedback(w, session.metrics().gap, idx, soon !== now ? soon : undefined))
+  const fb = buildFeedback(w, session.metrics().gap, idx, soon !== now ? soon : undefined)
+  feedbackModal.show(fb)
+  cues.feedback(fb.title)
 }
 
 let lmShownAt = -1
@@ -527,6 +588,41 @@ function updateHud() {
   const g = Math.round(m.gap)
   gap.textContent = `${g >= 0 ? '+' : ''}${g}m`
   gap.className = 'g ' + (g >= 0 ? 'ahead' : 'behind')
+
+  // 지난 최고 기록 대비
+  if (m.ghostGap !== null) {
+    const gg = Math.round(m.ghostGap)
+    const el = $('s-ghost-gap')
+    el.textContent = `${gg >= 0 ? '+' : ''}${gg}m`
+    el.className = 'gv ' + (gg >= 0 ? 'ahead' : 'behind')
+  }
+
+  // 구간이 바뀌면 소리로 알린다 — 화면을 안 봐도 되게
+  if (lastStepLabel !== null && m.step.label !== lastStepLabel) {
+    cues.segment(m.step.label, m.intensity > lastStepIntensity)
+  }
+  lastStepLabel = m.step.label
+  lastStepIntensity = m.intensity
+
+  // 연결 끊김 배너
+  if (m.stallReason !== lastStallReason) {
+    const wasStalled = lastStallReason !== null
+    lastStallReason = m.stallReason
+    const bar = $('linkbar')
+    bar.classList.toggle('on', m.stalled)
+    if (m.stalled) {
+      $('link-txt').textContent = m.stallReason === 'link'
+        ? '로잉머신 연결이 끊어졌습니다'
+        : '로잉머신 데이터가 오지 않습니다'
+      $('link-sub').textContent = m.stallReason === 'link'
+        ? '자동으로 다시 연결하는 중 · 기록 시간은 멈춰 있습니다'
+        : '손잡이를 한 번 당겨보세요 · 기록 시간은 멈춰 있습니다'
+      if (!wasStalled) cues.linkLost()
+    } else if (wasStalled) {
+      cues.linkBack()
+    }
+  }
+
   $('s-prog').style.width = `${m.progress * 100}%`
   if (lastMiniMapAt < 0 || m.elapsed - lastMiniMapAt >= 0.1) {
     lastMiniMapAt = m.elapsed
@@ -553,6 +649,9 @@ function showSummary() {
   const s = session
   session = null
   unsub?.(); unsub = null
+  unsubStatus?.(); unsubStatus = null
+  $('linkbar').classList.remove('on')
+  cues.stopSpeech()
   view?.dispose(); view = null
   feedbackModal.reset()
   releaseWakeLock()
@@ -560,9 +659,25 @@ function showSummary() {
   $('sum-title').textContent = m.progress >= 0.999 ? '코스 완주' : '세션 종료'
 
   const beat = m.gap >= 0
-  $('sum-verdict').innerHTML = beat
-    ? `<b>${s.course.name}</b>에서 페이스 보트를 <b>${Math.round(m.gap)}m</b> 앞섰습니다.`
-    : `<b>${s.course.name}</b>에서 페이스 보트에 <b>${Math.abs(Math.round(m.gap))}m</b> 뒤졌습니다.`
+  const lines = [
+    beat
+      ? `<b>${s.course.name}</b>에서 페이스 보트를 <b>${Math.round(m.gap)}m</b> 앞섰습니다.`
+      : `<b>${s.course.name}</b>에서 페이스 보트에 <b>${Math.abs(Math.round(m.gap))}m</b> 뒤졌습니다.`,
+  ]
+
+  // 고스트(지난 최고 기록) 대비.
+  // ⚠️ 이번 세션을 저장하기 전에 비교해야 한다 — 저장 후엔 이번 기록이 최고가 되어버린다.
+  const prevBest = s.ghost?.record ?? null
+  if (prevBest && m.progress >= 0.999) {
+    const diff = m.distance - prevBest.distance
+    lines.push(
+      diff >= 0
+        ? `지난 최고 기록을 <b>${Math.round(diff)}m</b> 넘었습니다. 새 기록입니다.`
+        : `지난 최고 기록에 <b>${Math.abs(Math.round(diff))}m</b> 못 미쳤습니다.`,
+    )
+    if (diff >= 0) $('sum-title').textContent = '새 최고 기록'
+  }
+  $('sum-verdict').innerHTML = lines.join('<br>')
 
   const n = s.track.length
   const avgSpm = n ? s.track.reduce((a, x) => a + x.spm, 0) / n : 0
@@ -621,6 +736,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && $('screen-race').classList.contains('active')) {
     requestWakeLock()
     void metronome.unlock()
+    cues.primeSpeech()
   } else if (document.visibilityState !== 'visible') {
     metronome.stop()
   }

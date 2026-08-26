@@ -48,6 +48,12 @@ export const COLORS_PLAYER: RigColors = {
   hull: '#f0f3f7', jersey: '#ff5a3c', shorts: '#1f2c3a', skin: '#e8b48c',
   oar: '#e4e9ef', blade: '#ff5a3c',
 }
+/** 고스트(지난 내 최고 기록) — 금빛으로 구분한다. 페이스 보트의 회색과 안 헷갈린다. */
+export const COLORS_GHOST: RigColors = {
+  hull: '#f5e3b8', jersey: '#e0a33a', shorts: '#5a4526', skin: '#d9c39a',
+  oar: '#e8d5a8', blade: '#e0a33a',
+}
+
 export const COLORS_PACE: RigColors = {
   hull: '#59636f', jersey: '#828d9a', shorts: '#414b56', skin: '#98a2ac',
   oar: '#6d7885', blade: '#828d9a',

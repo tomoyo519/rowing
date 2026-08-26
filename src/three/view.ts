@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { World } from './world'
-import { Rig, COLORS_PLAYER, COLORS_PACE } from './rig'
+import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST } from './rig'
 import { projectedDistance } from '../game/courses'
 import { splitToSpeed } from '../game/physics'
 import { StrokeEngine } from '../game/stroke'
@@ -8,6 +8,7 @@ import {
   createCoursePath,
   localPathPoint,
   PACE_LANE_OFFSET,
+  GHOST_LANE_OFFSET,
   PLAYER_LANE_OFFSET,
   type CoursePath,
 } from '../game/coursePath'
@@ -52,6 +53,9 @@ export class View {
   private world: World
   private player: Rig
   private pace: Rig
+  /** 지난 최고 기록이 있을 때만 만든다 */
+  private ghost: Rig | null = null
+  private ghostStroke = new StrokeEngine()
   private total: number
   private paceStroke = new StrokeEngine()
   private camShake = 0
@@ -85,6 +89,15 @@ export class View {
     this.paceStroke.onSample(24, undefined, 0)
     this.paceStroke.spm = 24
     this.paceStroke.phase = 0.45
+
+    if (session.ghost) {
+      this.ghost = new Rig(COLORS_GHOST, 0.72)
+      this.world.scene.add(this.ghost.group)
+      this.ghostStroke.onSample(25, undefined, 0)
+      this.ghostStroke.spm = 25
+      // 세 보트가 같은 위상으로 젓으면 한 덩어리로 보인다 — 위상을 흩뜨린다
+      this.ghostStroke.phase = 0.8
+    }
 
     this.resize()
   }
@@ -123,6 +136,36 @@ export class View {
     const visible = Math.abs(m.gap) < 90
     this.pace.group.visible = visible
 
+    let ghostVisible = false
+    let ghostZ = 0
+
+    // ── 고스트: 지난 내 최고 기록 ────────────────────────────
+    if (this.ghost && m.ghostGap !== null) {
+      const ghostSplit = session.ghost!.splitAt(m.elapsed)
+      this.ghostStroke.onSample(
+        paceStrokeRate(isFinite(ghostSplit) && ghostSplit > 0 ? session.baseSplit / ghostSplit : 1),
+        undefined, timeSec * 1000,
+      )
+      this.ghostStroke.update(dt)
+      this.ghost.apply(
+        this.ghostStroke.pose(), dt,
+        isFinite(ghostSplit) ? splitToSpeed(ghostSplit) : 0,
+      )
+      const gp = localPathPoint(
+        this.path,
+        m.distance,
+        -m.ghostGap,
+        GHOST_LANE_OFFSET,
+        PLAYER_LANE_OFFSET,
+      )
+      this.ghost.group.position.x = gp.x
+      this.ghost.group.position.z = gp.z
+      this.ghost.group.rotation.y = -gp.yaw
+      this.ghost.group.visible = Math.abs(m.ghostGap) < 90
+      ghostVisible = this.ghost.group.visible
+      ghostZ = this.ghost.group.position.z
+    }
+
     this.world.update(timeSec, m.elapsed, m.distance, this.total, 0)
 
     // ── 카메라 ──────────────────────────────────────────────
@@ -130,7 +173,12 @@ export class View {
     const surge = pose.inWater ? Math.sin(pose.driveProgress * Math.PI) : -0.25
     this.camShake += (surge - this.camShake) * (1 - Math.exp(-dt / 0.12))
     const speedK = Math.min(1, session.boat.speed / 5)
-    const targetFrameZ = visible ? this.pace.group.position.z / 2 : 0
+    // 페이스 보트만 따라가면 반대편 고스트가 화면 밖으로 밀린다.
+    // 보이는 보트들의 z 범위 중앙을 잡아야 셋 다 프레임에 들어온다.
+    const zs = [0]
+    if (visible) zs.push(this.pace.group.position.z)
+    if (ghostVisible) zs.push(ghostZ)
+    const targetFrameZ = (Math.min(...zs) + Math.max(...zs)) / 2
     this.frameZ += (targetFrameZ - this.frameZ) * (1 - Math.exp(-dt / 0.35))
 
     const cam = CAMERAS[this.camIndex]!
