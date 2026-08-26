@@ -302,7 +302,7 @@ function syncSoundButton() {
   const button = $<HTMLButtonElement>('btn-sound')
   button.textContent = metronome.isMuted ? '×♪' : '♪'
   button.setAttribute('aria-pressed', String(metronome.isMuted))
-  button.title = metronome.isMuted ? '메트로놈 소리 켜기' : '메트로놈 음소거'
+  button.title = metronome.isMuted ? '로잉 리듬 소리 켜기' : '로잉 리듬 소리 끄기'
   button.setAttribute('aria-label', button.title)
 }
 syncSoundButton()
@@ -414,7 +414,12 @@ function frame(now: number) {
 
   if (session && view && $('screen-race').classList.contains('active')) {
     session.update(dt)
-    metronome.update(session.stroke.phase, session.stroke.spm, session.phase === 'running')
+    metronome.update(
+      session.stroke.phase,
+      session.stroke.spm,
+      session.stroke.driveFraction,
+      session.phase === 'running',
+    )
     view.render(session, now / 1000, dt)
     updateHud()
     checkFeedback()

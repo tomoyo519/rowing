@@ -1,38 +1,81 @@
 const MUTE_KEY = 'makeRowing.metronomeMuted'
 
-/**
- * 평활화된 실제 스트로크 위상에서 catch(phase 0)를 한 번만 검출한다.
- * FTMS strokeCount가 늦게 들어와 위상이 중간에 0으로 보정되는 경우도 catch로 친다.
- */
-export class CatchBeatDetector {
-  private previousPhase: number | null = null
+export type StrokeCue = 'pull' | 'return'
 
-  update(phase: number, spm: number, active: boolean): boolean {
-    if (!active || !Number.isFinite(phase) || !Number.isFinite(spm) || spm < 6) {
-      this.previousPhase = null
-      return false
+/**
+ * 한 스트로크에서 두 시점을 검출한다.
+ *
+ * - pull: 캐치에서 당기기를 시작할 때
+ * - return: 드라이브를 마치고 원위치로 돌아가기 시작할 때
+ *
+ * FTMS의 늦은 strokeCount가 예상 캐치 직후 phase를 다시 0으로 보정해도
+ * 같은 pull 소리가 두 번 나지 않도록, 사이클 중반을 지난 뒤에만 다음 pull을 허용한다.
+ */
+export class StrokeCueDetector {
+  private previousPhase: number | null = null
+  private pullLocked = true
+  private returnPlayed = true
+
+  update(phase: number, spm: number, driveFraction: number, active: boolean): StrokeCue | null {
+    if (
+      !active
+      || !Number.isFinite(phase)
+      || !Number.isFinite(spm)
+      || !Number.isFinite(driveFraction)
+      || spm < 6
+    ) {
+      this.reset()
+      return null
     }
 
     const normalized = ((phase % 1) + 1) % 1
+    const recoveryAt = Math.min(0.58, Math.max(0.25, driveFraction))
     if (this.previousPhase === null) {
       this.previousPhase = normalized
-      return normalized < 0.035
+      // 운동 도중 소리를 켜도 현재 동작 중간에서 갑자기 울리지 않고 다음 경계부터 맞춘다.
+      this.pullLocked = normalized < 0.58
+      this.returnPlayed = normalized >= recoveryAt
+      return null
     }
 
     const previous = this.previousPhase
     this.previousPhase = normalized
-    // 정상적인 1→0 wrap 또는 실기기 strokeCount가 만든 catch 보정.
-    return normalized < 0.065 && (previous > 0.72 || previous - normalized > 0.075)
+
+    // 사이클 후반까지 왔을 때만 다음 pull을 연다. 예상 wrap 직후 들어온 늦은
+    // strokeCount 보정(예: 0.18 → 0)은 아직 잠겨 있어 중복 소리를 내지 않는다.
+    if (normalized >= 0.58) this.pullLocked = false
+
+    const movedToCatch = normalized < 0.075
+      && (previous > 0.72 || previous - normalized > 0.12)
+    if (movedToCatch && !this.pullLocked) {
+      this.pullLocked = true
+      this.returnPlayed = false
+      return 'pull'
+    }
+
+    const crossedRecovery = normalized > previous
+      && previous < recoveryAt
+      && normalized >= recoveryAt
+    if (crossedRecovery && !this.returnPlayed) {
+      this.returnPlayed = true
+      return 'return'
+    }
+
+    return null
   }
 
-  reset() { this.previousPhase = null }
+  reset() {
+    this.previousPhase = null
+    this.pullLocked = true
+    this.returnPlayed = true
+  }
 }
 
-/** Web Audio로 실제 로잉 catch마다 짧은 클릭을 낸다. */
+/** 실제 로잉 동작에 맞춰 당길 때 `똑`, 돌아갈 때 `딱` 소리를 낸다. */
 export class RowingMetronome {
   private context: AudioContext | null = null
   private master: GainNode | null = null
-  private detector = new CatchBeatDetector()
+  private detector = new StrokeCueDetector()
   private muted = false
 
   constructor() {
@@ -67,9 +110,9 @@ export class RowingMetronome {
     }
   }
 
-  update(phase: number, spm: number, active: boolean) {
-    const beat = this.detector.update(phase, spm, active)
-    if (beat && !this.muted) this.click()
+  update(phase: number, spm: number, driveFraction: number, active: boolean) {
+    const cue = this.detector.update(phase, spm, driveFraction, active)
+    if (cue && !this.muted) this.click(cue)
   }
 
   setMuted(muted: boolean) {
@@ -98,7 +141,7 @@ export class RowingMetronome {
     this.master = null
   }
 
-  private click() {
+  private click(cue: StrokeCue) {
     const context = this.context
     const master = this.master
     if (!context || !master || context.state !== 'running') return
@@ -106,16 +149,19 @@ export class RowingMetronome {
     const now = context.currentTime
     const oscillator = context.createOscillator()
     const envelope = context.createGain()
+    const isPull = cue === 'pull'
+    const duration = isPull ? 0.052 : 0.03
+
     oscillator.type = 'triangle'
-    oscillator.frequency.setValueAtTime(1_080, now)
-    oscillator.frequency.exponentialRampToValueAtTime(620, now + 0.055)
+    // 고정된 두 음높이와 짧은 감쇠를 써서 기존의 `삐융` 같은 전자음 느낌을 없앤다.
+    oscillator.frequency.setValueAtTime(isPull ? 520 : 980, now)
     envelope.gain.setValueAtTime(0.0001, now)
-    envelope.gain.exponentialRampToValueAtTime(0.17, now + 0.006)
-    envelope.gain.exponentialRampToValueAtTime(0.0001, now + 0.06)
+    envelope.gain.exponentialRampToValueAtTime(isPull ? 0.13 : 0.085, now + 0.003)
+    envelope.gain.exponentialRampToValueAtTime(0.0001, now + duration)
     oscillator.connect(envelope)
     envelope.connect(master)
     oscillator.start(now)
-    oscillator.stop(now + 0.065)
+    oscillator.stop(now + duration + 0.006)
     oscillator.onended = () => {
       oscillator.disconnect()
       envelope.disconnect()
