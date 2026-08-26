@@ -9,6 +9,8 @@ export type Phase = 'idle' | 'running' | 'finished'
 
 export interface Metrics {
   distance: number
+  /** 현재 보트 속도 (m/s) */
+  speed: number
   elapsed: number
   remaining: number
   split: number
@@ -154,6 +156,7 @@ export class Session {
     const intensity = this.intensity
     return {
       distance: d,
+      speed: this.boat.speed,
       elapsed: this.elapsed,
       remaining: Math.max(0, this.course.durationSec - this.elapsed),
       split,

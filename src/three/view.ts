@@ -4,6 +4,13 @@ import { Rig, COLORS_PLAYER, COLORS_PACE } from './rig'
 import { projectedDistance } from '../game/courses'
 import { splitToSpeed } from '../game/physics'
 import { StrokeEngine } from '../game/stroke'
+import {
+  createCoursePath,
+  localPathPoint,
+  PACE_LANE_OFFSET,
+  PLAYER_LANE_OFFSET,
+  type CoursePath,
+} from '../game/coursePath'
 import type { Session } from '../game/state'
 
 /** 페이스 보트가 나란히 달리는 옆 레인 간격 (m) */
@@ -50,6 +57,7 @@ export class View {
   private camShake = 0
   private frameZ = 0
   private camIndex = 0
+  private path: CoursePath
 
   constructor(canvas: HTMLCanvasElement, session: Session) {
     this.renderer = new THREE.WebGLRenderer({
@@ -66,6 +74,7 @@ export class View {
     this.world = new World(session.course, session.weatherSeed)
     this.world.attachWeatherToCamera(this.camera)
     this.total = projectedDistance(session.course, session.baseSplit)
+    this.path = createCoursePath(session.course.id)
 
     this.player = new Rig(COLORS_PLAYER)
     this.world.scene.add(this.player.group)
@@ -101,7 +110,16 @@ export class View {
     this.paceStroke.onSample(paceStrokeRate(m.intensity), undefined, timeSec * 1000)
     this.paceStroke.update(dt)
     this.pace.apply(this.paceStroke.pose(), dt, splitToSpeed(m.targetSplit))
-    this.pace.group.position.x = -m.gap
+    const pacePoint = localPathPoint(
+      this.path,
+      m.distance,
+      -m.gap,
+      PACE_LANE_OFFSET,
+      PLAYER_LANE_OFFSET,
+    )
+    this.pace.group.position.x = pacePoint.x
+    this.pace.group.position.z = pacePoint.z
+    this.pace.group.rotation.y = -pacePoint.yaw
     const visible = Math.abs(m.gap) < 90
     this.pace.group.visible = visible
 
@@ -112,7 +130,7 @@ export class View {
     const surge = pose.inWater ? Math.sin(pose.driveProgress * Math.PI) : -0.25
     this.camShake += (surge - this.camShake) * (1 - Math.exp(-dt / 0.12))
     const speedK = Math.min(1, session.boat.speed / 5)
-    const targetFrameZ = visible ? PACE_LANE_Z / 2 : 0
+    const targetFrameZ = visible ? this.pace.group.position.z / 2 : 0
     this.frameZ += (targetFrameZ - this.frameZ) * (1 - Math.exp(-dt / 0.35))
 
     const cam = CAMERAS[this.camIndex]!

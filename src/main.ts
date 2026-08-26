@@ -1,4 +1,4 @@
-import { FtmsSource } from './ble/connection'
+import { FtmsSource, type BleDiagnosticEntry } from './ble/connection'
 import { MockSource } from './sim/mockRower'
 import {
   COURSES, PACE_TIERS, courseGroups, projectedDistance, courseRangeLabel,
@@ -12,6 +12,14 @@ import { FeedbackModal } from './ui/feedbackModal'
 import { renderHistory } from './ui/historyScreen'
 import { View } from './three/view'
 import { formatSplit, formatSplitShort, formatClock } from './game/physics'
+import { RowingMetronome } from './audio/metronome'
+import {
+  createCoursePath,
+  localPathPoint,
+  PACE_LANE_OFFSET,
+  PLAYER_LANE_OFFSET,
+  type CoursePath,
+} from './game/coursePath'
 import type { RowerSource } from './types'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
@@ -26,6 +34,80 @@ let view: View | null = null
 let selectedCourse: Course = COURSES[0]!
 let selectedTier: PaceTier = PACE_TIERS[1]!
 let wakeLock: WakeLockSentinel | null = null
+
+// Bluetooth 진단은 화면을 이동해도 남아 있어, 나중에 복사해서 확인할 수 있다.
+const bleLog: BleDiagnosticEntry[] = []
+const BLE_LOG_LIMIT = 120
+
+function appendBleLog(entry: BleDiagnosticEntry) {
+  bleLog.push(entry)
+  if (bleLog.length > BLE_LOG_LIMIT) bleLog.shift()
+
+  const panel = $('ble-log-panel')
+  const open = $('btn-log-open')
+  open.hidden = false
+  $('ble-log-count').textContent = String(bleLog.length)
+  if ($('screen-connect').classList.contains('active') || entry.level === 'warning' || entry.level === 'error') {
+    panel.hidden = false
+  }
+  const list = $('ble-log-list')
+  const item = document.createElement('li')
+  item.className = `ble-entry ${entry.level}`
+
+  const meta = document.createElement('div')
+  meta.className = 'ble-entry-meta'
+  const time = document.createElement('time')
+  time.textContent = new Date(entry.at).toLocaleTimeString('ko-KR', { hour12: false })
+  const code = document.createElement('code')
+  code.textContent = entry.errorName ? `${entry.code} · ${entry.errorName}` : entry.code
+  meta.append(time, code)
+
+  const message = document.createElement('div')
+  message.className = 'ble-entry-msg'
+  message.textContent = entry.message
+  item.append(meta, message)
+  if (entry.detail) {
+    const detail = document.createElement('div')
+    detail.className = 'ble-entry-detail'
+    detail.textContent = entry.detail
+    item.append(detail)
+  }
+  list.append(item)
+  while (list.children.length > BLE_LOG_LIMIT) list.firstElementChild?.remove()
+  list.scrollTop = list.scrollHeight
+  $('ble-log-state').textContent = entry.message
+}
+
+function bleLogText() {
+  return bleLog.map(entry => {
+    const at = new Date(entry.at).toISOString()
+    const error = entry.errorName ? ` ${entry.errorName}` : ''
+    const detail = entry.detail ? `\n  ${entry.detail}` : ''
+    return `[${at}] ${entry.level.toUpperCase()} ${entry.code}${error}\n  ${entry.message}${detail}`
+  }).join('\n')
+}
+
+$('btn-log-copy').addEventListener('click', async () => {
+  const button = $<HTMLButtonElement>('btn-log-copy')
+  try {
+    await navigator.clipboard.writeText(bleLogText())
+    button.textContent = '복사됨'
+  } catch {
+    button.textContent = '복사 실패'
+  }
+  window.setTimeout(() => { button.textContent = '복사' }, 1_400)
+})
+
+$('btn-log-clear').addEventListener('click', () => {
+  bleLog.length = 0
+  $('ble-log-list').replaceChildren()
+  $('ble-log-state').textContent = '로그를 지웠습니다'
+  $('ble-log-count').textContent = '0'
+  $('btn-log-open').hidden = true
+})
+
+$('btn-log-open').addEventListener('click', () => { $('ble-log-panel').hidden = false })
+$('btn-log-close').addEventListener('click', () => { $('ble-log-panel').hidden = true })
 
 // ── 연결 화면 ───────────────────────────────────────────────
 const note = $('connect-note')
@@ -43,18 +125,35 @@ if (!navigator.bluetooth) {
 
 $('btn-ble').addEventListener('click', async () => {
   const err = $('connect-err')
+  const button = $<HTMLButtonElement>('btn-ble')
   err.textContent = ''
+  $('ble-log-panel').hidden = false
+  button.disabled = true
+  button.textContent = '연결 확인 중…'
   const src = new FtmsSource()
+  src.onDiagnostic(appendBleLog)
   src.onStatus((s, d) => {
     if (s === 'error') err.textContent = d ?? '연결에 실패했습니다'
-    if (s === 'disconnected') err.textContent = '로잉머신 연결이 끊어졌습니다'
+    if (s === 'disconnected') {
+      err.textContent = '로잉머신 연결이 끊어졌습니다'
+      if ($('screen-race').classList.contains('active')) {
+        const alert = $('ble-race-alert')
+        alert.textContent = '로잉머신 연결이 끊어졌습니다. 연결 화면의 진단 로그에서 원인을 확인할 수 있습니다.'
+        alert.classList.add('on')
+      }
+    }
   })
   try {
     await src.connect()
     source = src
     $('simctl').classList.remove('on')
+    $('ble-log-panel').hidden = true
     goCourseSelect()
-  } catch { /* onStatus가 이미 표시함 */ }
+  } catch { /* onStatus와 단계별 진단 로그가 이미 표시함 */ }
+  finally {
+    button.disabled = false
+    button.textContent = '로잉머신 연결'
+  }
 })
 
 $('btn-sim').addEventListener('click', async () => {
@@ -163,6 +262,24 @@ $('btn-sum-history').addEventListener('click', () => goHistory(() => show('scree
 const cv = $<HTMLCanvasElement>('cv')
 let unsub: (() => void) | null = null
 const feedbackModal = new FeedbackModal()
+const metronome = new RowingMetronome()
+let racePath: CoursePath = createCoursePath(selectedCourse.id)
+let raceTotal = 1
+let lastMiniMapAt = -1
+
+function syncSoundButton() {
+  const button = $<HTMLButtonElement>('btn-sound')
+  button.textContent = metronome.isMuted ? '×♪' : '♪'
+  button.setAttribute('aria-pressed', String(metronome.isMuted))
+  button.title = metronome.isMuted ? '메트로놈 소리 켜기' : '메트로놈 음소거'
+  button.setAttribute('aria-label', button.title)
+}
+syncSoundButton()
+
+$('btn-sound').addEventListener('click', () => {
+  metronome.toggleMuted()
+  syncSoundButton()
+})
 
 /**
  * 피드백 주기 (초). 기본 5분.
@@ -181,12 +298,20 @@ window.addEventListener('orientationchange', () => setTimeout(() => view?.resize
 
 async function startRace() {
   if (!source) return
+  // 첫 await 전에 호출되어야 iPad가 Web Audio를 사용자 제스처로 인정한다.
+  void metronome.unlock()
+  metronome.stop()
   session = new Session(selectedCourse, selectedTier.split)
   unsub?.()
   unsub = source.onSample(s => session?.onSample(s))
 
   lastCheckpoint = 0
   feedbackModal.reset()
+  $('ble-race-alert').classList.remove('on')
+  racePath = createCoursePath(selectedCourse.id)
+  raceTotal = projectedDistance(selectedCourse, selectedTier.split)
+  lastMiniMapAt = -1
+  renderRaceProfile()
   show('screen-race')
   view?.dispose()
   view = new View(cv, session)
@@ -203,7 +328,11 @@ async function startRace() {
   session.start()
 }
 
-$('btn-quit').addEventListener('click', () => { session?.finish(); showSummary() })
+$('btn-quit').addEventListener('click', () => {
+  metronome.stop()
+  session?.finish()
+  showSummary()
+})
 
 let camToastAt = 0
 $('btn-cam').addEventListener('click', () => {
@@ -229,6 +358,7 @@ function frame(now: number) {
 
   if (session && view && $('screen-race').classList.contains('active')) {
     session.update(dt)
+    metronome.update(session.stroke.phase, session.stroke.spm, session.phase === 'running')
     view.render(session, now / 1000, dt)
     updateHud()
     checkFeedback()
@@ -260,20 +390,130 @@ function checkFeedback() {
 }
 
 let lmShownAt = -1
+
+function renderRaceProfile() {
+  const track = $('race-profile')
+  const parts = profileSamples(selectedCourse.profile, selectedCourse.durationSec, 12)
+    .map(value => {
+      const part = document.createElement('span')
+      part.className = value < 0.97 ? 'easy' : value > 1.03 ? 'hard' : 'steady'
+      part.title = `목표 강도 ${Math.round(value * 100)}%`
+      return part
+    })
+  const progress = document.createElement('i')
+  progress.id = 's-prog'
+  track.replaceChildren(...parts, progress)
+  $('route-total').textContent = `${(raceTotal / 1000).toFixed(1)} km`
+}
+
+function drawMiniMap(distance: number, gap: number) {
+  const canvas = $<HTMLCanvasElement>('mini-map')
+  const cssSize = Math.max(90, canvas.clientWidth || 118)
+  const ratio = Math.min(window.devicePixelRatio || 1, 2)
+  const pixels = Math.round(cssSize * ratio)
+  if (canvas.width !== pixels || canvas.height !== pixels) {
+    canvas.width = pixels
+    canvas.height = pixels
+  }
+  const context = canvas.getContext('2d')
+  if (!context) return
+  context.setTransform(ratio, 0, 0, ratio, 0, 0)
+  const size = canvas.width / ratio
+  const center = size / 2
+  const baseY = size * 0.83
+  const scaleForward = (size * 0.72) / 430
+  const scaleSide = size / 54
+  const mapPoint = (along: number, lateral: number) => {
+    const point = localPathPoint(
+      racePath, distance, along, lateral, PLAYER_LANE_OFFSET,
+    )
+    return { x: center + point.z * scaleSide, y: baseY - point.x * scaleForward }
+  }
+
+  context.clearRect(0, 0, size, size)
+  context.save()
+  context.beginPath()
+  context.arc(center, center, center - 2, 0, Math.PI * 2)
+  context.clip()
+  context.fillStyle = 'rgba(8,17,25,.72)'
+  context.fillRect(0, 0, size, size)
+
+  const drawPath = (lateral: number, color: string, width: number) => {
+    context.beginPath()
+    for (let along = -70, i = 0; along <= 440; along += 10, i++) {
+      const point = mapPoint(along, lateral)
+      if (i === 0) context.moveTo(point.x, point.y)
+      else context.lineTo(point.x, point.y)
+    }
+    context.strokeStyle = color
+    context.lineWidth = width
+    context.lineCap = 'round'
+    context.lineJoin = 'round'
+    context.stroke()
+  }
+  drawPath(0, 'rgba(54,188,229,.78)', 12)
+  drawPath(BANK_MINI_OFFSET, 'rgba(220,230,232,.52)', 2.5)
+  drawPath(-BANK_MINI_OFFSET, 'rgba(220,230,232,.52)', 2.5)
+  drawPath(0, 'rgba(6,31,42,.55)', 1.5)
+
+  const finishAlong = raceTotal - distance
+  if (finishAlong > -35 && finishAlong < 440) {
+    const left = mapPoint(finishAlong, 8)
+    const right = mapPoint(finishAlong, -8)
+    context.beginPath()
+    context.moveTo(left.x, left.y)
+    context.lineTo(right.x, right.y)
+    context.setLineDash([3, 3])
+    context.strokeStyle = '#fff'
+    context.lineWidth = 3
+    context.stroke()
+    context.setLineDash([])
+  }
+
+  const pace = localPathPoint(
+    racePath, distance, -gap, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET,
+  )
+  const paceX = center + pace.z * scaleSide
+  const paceY = baseY - pace.x * scaleForward
+  if (paceY > -8 && paceY < size + 8) {
+    context.beginPath()
+    context.arc(paceX, paceY, 3.4, 0, Math.PI * 2)
+    context.fillStyle = '#ff7b60'
+    context.fill()
+  }
+
+  context.beginPath()
+  context.moveTo(center, baseY - 7)
+  context.lineTo(center - 5.5, baseY + 6)
+  context.lineTo(center + 5.5, baseY + 6)
+  context.closePath()
+  context.fillStyle = '#fff'
+  context.fill()
+  context.restore()
+
+  $('mini-caption').textContent = `${(distance / 1000).toFixed(1)} / ${(raceTotal / 1000).toFixed(1)} km`
+}
+
+const BANK_MINI_OFFSET = 15
+
 function updateHud() {
   if (!session || !view) return
   const m = session.metrics()
 
-  $('s-split').textContent = formatSplit(m.split)
-  $('s-target').textContent = formatSplit(m.targetSplit)
-  $('s-dist').innerHTML = `${Math.round(m.distance)}<span class="u">m</span>`
-  $('s-time').textContent = formatClock(m.remaining)
+  $('s-split').textContent = formatSplitShort(m.split)
+  $('s-target').textContent = formatSplitShort(m.targetSplit)
+  $('s-dist').textContent = String(Math.round(m.distance))
+  $('s-time').textContent = formatClock(m.elapsed)
+  $('s-speed').textContent = (m.speed * 3.6).toFixed(1)
+  $('s-calories').textContent = m.calories === undefined ? '—' : String(Math.round(m.calories))
   $('s-spm').textContent = String(Math.round(m.spm))
-  $('s-pow').innerHTML = `${Math.round(m.power)}<span class="u">W</span>`
+  $('s-pow').textContent = String(Math.round(m.power))
+  $('s-remaining').textContent = `${formatClock(m.remaining)} 남음`
 
   // 목표 대비 얼마나 벗어났는지 색으로
   const off = m.split - m.targetSplit
   $('s-split').className = 'v ' + (off < -1.5 ? 'fast' : off > 1.5 ? 'slow' : '')
+  $('pace-dial').style.setProperty('--dial-fill', `${Math.max(8, session.stroke.phase * 270)}deg`)
 
   // 현재 구간
   const seg = $('segment')
@@ -288,6 +528,10 @@ function updateHud() {
   gap.textContent = `${g >= 0 ? '+' : ''}${g}m`
   gap.className = 'g ' + (g >= 0 ? 'ahead' : 'behind')
   $('s-prog').style.width = `${m.progress * 100}%`
+  if (lastMiniMapAt < 0 || m.elapsed - lastMiniMapAt >= 0.1) {
+    lastMiniMapAt = m.elapsed
+    drawMiniMap(m.distance, m.gap)
+  }
 
   // 랜드마크 이름 — 지나갈 때만 잠깐
   const lm = view.nearestLandmark(session)
@@ -304,6 +548,7 @@ function updateHud() {
 // ── 요약 ────────────────────────────────────────────────────
 function showSummary() {
   if (!session) return
+  metronome.stop()
   const m = session.metrics()
   const s = session
   session = null
@@ -375,6 +620,9 @@ function releaseWakeLock() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && $('screen-race').classList.contains('active')) {
     requestWakeLock()
+    void metronome.unlock()
+  } else if (document.visibilityState !== 'visible') {
+    metronome.stop()
   }
 })
 

@@ -51,13 +51,56 @@
   .row > * { flex: 1; }
 
   /* ── 연결 화면 ── */
-  #screen-connect .pad { max-width: 520px; margin: auto; width: 100%; }
+  #screen-connect { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  #screen-connect .pad { max-width: 560px; margin: auto; width: 100%; }
   .note {
     margin-top: 20px; padding: 14px 16px; border-radius: 12px;
     background: var(--panel); border: 1px solid var(--line);
     color: var(--muted); font-size: 13.5px; line-height: 1.6;
   }
   .err { color: #ff8b73; font-size: 14px; min-height: 20px; margin-top: 14px; }
+  .ble-log {
+    position: fixed; z-index: 20; left: 50%; bottom: calc(var(--safe-b) + 18px);
+    width: min(560px, calc(100vw - 28px)); transform: translateX(-50%);
+    border: 1px solid var(--line); border-radius: 14px;
+    background: #0a111a; overflow: hidden; box-shadow: 0 20px 70px rgba(0,0,0,.48);
+  }
+  .ble-log[hidden] { display: none; }
+  .ble-log-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 12px 13px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .ble-log-title { font-size: 13px; font-weight: 750; }
+  .ble-log-state { font-size: 11px; color: var(--muted); }
+  .ble-log-actions { display: flex; gap: 6px; margin-left: auto; }
+  .ble-mini-btn {
+    pointer-events: auto; padding: 6px 9px; border: 1px solid var(--line);
+    border-radius: 8px; color: var(--muted); font-size: 11px; background: rgba(255,255,255,.035);
+  }
+  .ble-log-list {
+    max-height: 255px; overflow-y: auto; padding: 8px 0; margin: 0;
+    list-style: none; user-select: text; -webkit-user-select: text;
+  }
+  .ble-entry { padding: 8px 12px; border-left: 3px solid #587087; }
+  .ble-entry + .ble-entry { border-top: 1px solid rgba(255,255,255,.035); }
+  .ble-entry.success { border-left-color: #35c2a5; }
+  .ble-entry.warning { border-left-color: #ffb648; }
+  .ble-entry.error { border-left-color: #ff654c; background: rgba(255,90,60,.055); }
+  .ble-entry-meta { display: flex; gap: 7px; align-items: center; margin-bottom: 3px; }
+  .ble-entry time { color: #70879a; font: 10.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .ble-entry code { color: #7fcde4; font: 10.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .ble-entry-msg { color: #dce7ef; font-size: 12px; line-height: 1.45; }
+  .ble-entry-detail {
+    margin-top: 3px; color: #8197a9; font: 10.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow-wrap: anywhere;
+  }
+  .ble-log-open {
+    position: fixed; z-index: 19; left: 12px; top: calc(var(--safe-t) + 12px);
+    padding: 8px 11px; border: 1px solid rgba(127,205,228,.34); border-radius: 10px;
+    background: rgba(8,17,25,.72); color: #a6d9e8; font-size: 11px;
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+  }
+  .ble-log-open[hidden] { display: none; }
 
   /* ── 코스 선택 ── */
   #screen-course .pad { overflow-y: auto; -webkit-overflow-scrolling: touch; max-width: 900px; margin: 0 auto; width: 100%; }
@@ -119,47 +162,133 @@
   .tier-hint { color: var(--muted); font-size: 13px; text-align: center; margin: 0 0 28px; }
 
   /* ── 레이스 ── */
-  #cv { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .hud { position: absolute; inset: 0; pointer-events: none; }
+  #screen-race::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1;
+    background: linear-gradient(to bottom, rgba(5,11,17,.46), transparent 24%),
+      linear-gradient(to top, rgba(5,11,17,.66), transparent 35%);
+  }
+  #cv { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; display: block; }
+  .hud { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
   .hud-top {
-    position: absolute; top: calc(var(--safe-t) + 14px); left: 0; right: 0;
-    display: flex; justify-content: center; gap: 10px; padding: 0 16px; flex-wrap: wrap;
+    position: absolute; top: calc(var(--safe-t) + 13px); left: 50%;
+    width: min(64vw, 660px); transform: translateX(-50%);
+    display: grid; grid-template-columns: repeat(4, minmax(78px, 1fr));
+    gap: clamp(18px, 4vw, 54px);
   }
-  .stat {
-    background: rgba(9,17,26,.62); backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid rgba(255,255,255,.09); border-radius: 13px;
-    padding: 9px 15px; min-width: 92px; text-align: center;
+  .stat { min-width: 0; padding: 0; text-align: center; text-shadow: 0 2px 13px rgba(0,0,0,.82); }
+  .stat .k {
+    font-size: 10px; font-weight: 700; color: rgba(255,255,255,.67);
+    letter-spacing: .11em; margin-bottom: 4px;
   }
-  .stat .k { font-size: 10.5px; color: var(--muted); letter-spacing: .09em; margin-bottom: 3px; }
-  .stat .v { font-size: 23px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
-  .stat .u { font-size: 10.5px; color: var(--muted); margin-left: 2px; font-weight: 400; }
-  .stat.hero .v { font-size: 30px; color: var(--accent); }
-  .stat .v.fast { color: var(--accent-2); }
-  .stat .v.slow { color: #ff8b73; }
+  .stat .v {
+    color: #fff; font-size: clamp(18px, 2.1vw, 24px); font-weight: 720;
+    font-variant-numeric: tabular-nums; line-height: 1;
+  }
+  .stat .u { font-size: 10px; color: rgba(255,255,255,.62); margin-left: 3px; font-weight: 500; }
 
+  .course-strip {
+    position: absolute; top: calc(var(--safe-t) + 73px); left: 30px; right: 30px;
+    display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 15px;
+  }
+  .profile-track { position: relative; display: flex; gap: 6px; height: 8px; }
+  .profile-track > span { flex: 1; min-width: 0; border-radius: 5px; opacity: .95; }
+  .profile-track .easy { background: #4bc67a; }
+  .profile-track .steady { background: #3ebee4; }
+  .profile-track .hard { background: #ff6252; }
+  .profile-track > i {
+    position: absolute; inset: -2px auto -2px 0; width: 0;
+    border-right: 2px solid #fff; background: rgba(5,10,15,.50);
+    box-shadow: 2px 0 10px rgba(255,255,255,.8); pointer-events: none;
+  }
+  .route-total {
+    min-width: 54px; color: rgba(255,255,255,.91); font-size: 13px; font-weight: 750;
+    font-variant-numeric: tabular-nums; text-shadow: 0 2px 12px rgba(0,0,0,.8);
+  }
+
+  .hud-left {
+    position: absolute; left: 20px; bottom: calc(var(--safe-b) + 20px);
+    width: clamp(216px, 23vw, 286px); display: grid; gap: 8px;
+  }
   .segment {
-    position: absolute; left: 50%; transform: translateX(-50%);
-    top: calc(var(--safe-t) + 96px);
-    display: flex; align-items: center; gap: 10px;
-    background: rgba(9,17,26,.62); backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid rgba(255,255,255,.09); border-radius: 11px;
-    padding: 7px 15px; transition: border-color .3s;
+    position: relative; display: grid; grid-template-columns: 1fr auto;
+    align-items: baseline; gap: 4px 10px; padding: 11px 14px;
+    background: rgba(7,14,21,.54); backdrop-filter: blur(7px);
+    -webkit-backdrop-filter: blur(7px); border: 1px solid rgba(255,255,255,.10);
+    border-left: 4px solid #3ebee4; border-radius: 8px;
   }
-  .segment.hard { border-color: rgba(255,90,60,.55); }
-  .segment.easy { border-color: rgba(53,194,165,.5); }
-  .segment .seg-label { font-size: 13px; font-weight: 700; letter-spacing: .03em; }
-  .segment .seg-rem {
-    font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums;
+  .segment.hard { border-left-color: #ff6252; }
+  .segment.easy { border-left-color: #4bc67a; }
+  .panel-k {
+    grid-column: 1 / -1; color: rgba(255,255,255,.61); font-size: 9.5px;
+    font-weight: 750; letter-spacing: .11em;
   }
+  .segment .seg-label { font-size: 16px; font-weight: 750; }
+  .segment .seg-rem { font-size: 13px; color: rgba(255,255,255,.68); font-variant-numeric: tabular-nums; }
   .segment .seg-rem:empty { display: none; }
+
+  .target-panel {
+    padding: 11px 14px; background: rgba(7,14,21,.54); backdrop-filter: blur(7px);
+    -webkit-backdrop-filter: blur(7px); border: 1px solid rgba(255,255,255,.10);
+    border-left: 4px solid #3ebee4; border-radius: 8px;
+  }
+  .target-panel .panel-k { display: block; }
+  .target-main { margin-top: 4px; display: flex; align-items: baseline; }
+  .target-main strong { font-size: 31px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .target-unit { margin-left: 4px; color: rgba(255,255,255,.6); font-size: 11px; }
+  .target-meta {
+    display: flex; justify-content: space-between; gap: 8px; margin-top: 8px;
+    padding-top: 7px; border-top: 1px solid rgba(255,255,255,.09);
+    font-size: 11px; color: rgba(255,255,255,.64); font-variant-numeric: tabular-nums;
+  }
+  .target-meta .ahead { color: var(--accent-2); }
+  .target-meta .behind { color: #ff8b73; }
+
+  .cadence {
+    position: absolute; left: calc(50% - 150px); bottom: calc(var(--safe-b) + 23px);
+    color: #fff; text-align: center; text-shadow: 0 3px 15px rgba(0,0,0,.8);
+  }
+  .cadence strong { font-size: 38px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .cadence span { margin-left: 4px; font-size: 10px; color: rgba(255,255,255,.64); }
+
+  .pace-dial {
+    --dial-fill: 24deg; position: absolute; left: 50%; bottom: calc(var(--safe-b) + 8px);
+    width: 190px; height: 168px; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; text-shadow: 0 3px 16px rgba(0,0,0,.85);
+  }
+  .pace-dial::before {
+    content: ""; position: absolute; width: 174px; height: 174px; border-radius: 50%;
+    background: conic-gradient(from 225deg, #36bce5 0 var(--dial-fill), rgba(255,255,255,.14) var(--dial-fill) 270deg, transparent 270deg 360deg);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 14px), #000 0);
+    mask: radial-gradient(farthest-side, transparent calc(100% - 14px), #000 0);
+  }
+  .dial-k, .dial-u { position: relative; color: rgba(255,255,255,.63); font-size: 10px; letter-spacing: .08em; }
+  #s-split {
+    position: relative; color: #fff; font-size: clamp(48px, 6vw, 66px); font-weight: 760;
+    line-height: .96; font-variant-numeric: tabular-nums;
+  }
+  #s-split.fast { color: var(--accent-2); }
+  #s-split.slow { color: #ff7865; }
+  .dial-power { position: relative; margin-top: 5px; font-size: 16px; font-weight: 700; }
+  .dial-power .u { margin-left: 3px; color: rgba(255,255,255,.58); font-size: 10px; font-weight: 500; }
+
+  .mini-map {
+    position: absolute; right: 21px; bottom: calc(var(--safe-b) + 18px);
+    width: 126px; text-align: center; color: rgba(255,255,255,.78);
+    text-shadow: 0 2px 10px rgba(0,0,0,.8);
+  }
+  .mini-map canvas {
+    width: 118px; height: 118px; display: block; margin: 0 auto 5px;
+    border: 2px solid rgba(255,255,255,.36); border-radius: 50%;
+    background: rgba(7,14,21,.43); box-shadow: 0 10px 28px rgba(0,0,0,.26);
+  }
+  .mini-caption { font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
   /* ── 5분 피드백 모달 ── */
   .fb {
     position: absolute; inset: 0; display: none;
     align-items: center; justify-content: center;
-    pointer-events: none; padding: 24px;
+    pointer-events: none; padding: 24px; z-index: 3;
   }
   .fb.on { display: flex; }
   .fb-card {
@@ -197,26 +326,11 @@
 
   .landmark {
     position: absolute; left: 50%; transform: translateX(-50%);
-    bottom: calc(var(--safe-b) + 128px);
+    top: 46%;
     font-size: 14px; font-weight: 600; letter-spacing: .05em;
     color: rgba(255,255,255,.9); text-shadow: 0 2px 14px rgba(0,0,0,.7);
     opacity: 0; transition: opacity .35s; pointer-events: none;
   }
-
-  .gapbar {
-    position: absolute; left: 50%; transform: translateX(-50%);
-    bottom: calc(var(--safe-b) + 74px); text-align: center;
-  }
-  .gapbar .g { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .gapbar .g.ahead { color: var(--accent-2); }
-  .gapbar .g.behind { color: #ff8b73; }
-  .gapbar .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
-
-  .progress {
-    position: absolute; left: 26px; right: 26px; bottom: calc(var(--safe-b) + 40px);
-    height: 4px; background: rgba(255,255,255,.14); border-radius: 3px; overflow: hidden;
-  }
-  .progress i { display: block; height: 100%; background: var(--accent); border-radius: 3px; width: 0; }
 
   .race-ctl {
     position: absolute; top: calc(var(--safe-t) + 14px); right: 16px;
@@ -231,9 +345,10 @@
     background: rgba(9,17,26,.62); border: 1px solid rgba(255,255,255,.09);
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   }
+  .icon-btn[aria-pressed="true"] { color: #ff8b73; border-color: rgba(255,120,101,.45); }
 
   .simctl {
-    position: absolute; left: 26px; bottom: calc(var(--safe-b) + 62px);
+    position: absolute; right: 20px; bottom: calc(var(--safe-b) + 158px);
     pointer-events: auto; display: none; align-items: center; gap: 11px;
     background: rgba(9,17,26,.62); border: 1px solid rgba(255,255,255,.09);
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
@@ -243,10 +358,53 @@
   .simctl label { font-size: 11px; color: var(--muted); letter-spacing: .06em; }
   .simctl input { width: 130px; accent-color: var(--accent); }
 
+  .ble-race-alert {
+    position: absolute; left: 50%; top: calc(var(--safe-t) + 102px); transform: translateX(-50%);
+    display: none; max-width: min(560px, calc(100vw - 32px)); padding: 10px 14px;
+    border: 1px solid rgba(255,101,76,.5); border-radius: 10px; background: rgba(62,17,14,.82);
+    color: #ffd8d1; font-size: 12px; line-height: 1.45; text-align: center;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+  .ble-race-alert.on { display: block; }
+
+  @media (orientation: portrait) {
+    .hud-top {
+      top: calc(var(--safe-t) + 12px); left: 14px; right: 106px; width: auto;
+      transform: none; grid-template-columns: repeat(2, minmax(82px, 1fr)); gap: 12px 18px;
+    }
+    .hud-top .stat .v { font-size: 20px; }
+    .course-strip { top: calc(var(--safe-t) + 112px); left: 15px; right: 15px; }
+    .hud-left {
+      left: 14px; right: 14px; bottom: calc(var(--safe-b) + 178px); width: auto;
+      grid-template-columns: 1.12fr .88fr;
+    }
+    .segment, .target-panel { min-height: 76px; padding: 10px 11px; }
+    .target-main strong { font-size: 27px; }
+    .target-meta { font-size: 9.5px; }
+    .pace-dial { width: 166px; height: 154px; }
+    .pace-dial::before { width: 154px; height: 154px; }
+    #s-split { font-size: 49px; }
+    .cadence { left: 17px; bottom: calc(var(--safe-b) + 52px); }
+    .cadence strong { font-size: 32px; }
+    .mini-map { right: 10px; bottom: calc(var(--safe-b) + 14px); width: 102px; }
+    .mini-map canvas { width: 94px; height: 94px; }
+    .simctl { right: 12px; bottom: calc(var(--safe-b) + 126px); }
+    .simctl input { width: 94px; }
+    .landmark { top: 40%; }
+    .ble-race-alert { top: calc(var(--safe-t) + 143px); }
+  }
+
+  @media (max-height: 560px) and (orientation: landscape) {
+    .hud-left { bottom: calc(var(--safe-b) + 12px); transform: scale(.88); transform-origin: bottom left; }
+    .pace-dial { transform: translateX(-50%) scale(.84); transform-origin: bottom center; }
+    .cadence { transform: scale(.86); transform-origin: bottom center; }
+    .mini-map { transform: scale(.86); transform-origin: bottom right; }
+  }
+
   .countdown {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     font-size: 110px; font-weight: 800; color: #fff; text-shadow: 0 6px 40px rgba(0,0,0,.6);
-    background: rgba(6,12,19,.42); pointer-events: none;
+    background: rgba(6,12,19,.42); pointer-events: none; z-index: 4;
   }
 
   /* ── 기록 ── */
@@ -352,26 +510,52 @@
   <canvas id="cv"></canvas>
   <div class="hud">
     <div class="hud-top">
-      <div class="stat hero"><div class="k">SPLIT /500m</div><div class="v" id="s-split">--:--</div></div>
-      <div class="stat"><div class="k">목표</div><div class="v" id="s-target">--:--</div></div>
-      <div class="stat"><div class="k">거리</div><div class="v" id="s-dist">0<span class="u">m</span></div></div>
-      <div class="stat"><div class="k">남은 시간</div><div class="v" id="s-time">00:00</div></div>
-      <div class="stat"><div class="k">SPM</div><div class="v" id="s-spm">0</div></div>
-      <div class="stat"><div class="k">파워</div><div class="v" id="s-pow">0<span class="u">W</span></div></div>
+      <div class="stat"><div class="k">TIME</div><div class="v" id="s-time">00:00</div></div>
+      <div class="stat"><div class="k">DISTANCE</div><div class="v"><span id="s-dist">0</span><span class="u">m</span></div></div>
+      <div class="stat"><div class="k">SPEED</div><div class="v"><span id="s-speed">0.0</span><span class="u">km/h</span></div></div>
+      <div class="stat"><div class="k">CALORIES</div><div class="v"><span id="s-calories">0</span><span class="u">kcal</span></div></div>
     </div>
-    <div class="segment" id="segment">
-      <span class="seg-label">—</span><span class="seg-rem"></span>
+
+    <div class="course-strip">
+      <div class="profile-track" id="race-profile"><i id="s-prog"></i></div>
+      <span class="route-total" id="route-total">0.0 km</span>
     </div>
+
+    <aside class="hud-left">
+      <div class="segment" id="segment">
+        <span class="panel-k">CURRENT</span>
+        <strong class="seg-label">—</strong><span class="seg-rem"></span>
+      </div>
+      <div class="target-panel">
+        <span class="panel-k">TARGET</span>
+        <div class="target-main"><strong id="s-target">--:--</strong><span class="target-unit">/500m</span></div>
+        <div class="target-meta">
+          <span id="s-remaining">00:00 남음</span>
+          <span class="g" id="s-gap">0m</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="cadence"><strong id="s-spm">0</strong><span>s/m</span></div>
+    <div class="pace-dial" id="pace-dial">
+      <span class="dial-k">PACE</span>
+      <strong class="v" id="s-split">--:--</strong>
+      <span class="dial-u">/500m</span>
+      <div class="dial-power"><span id="s-pow">0</span><span class="u">W</span></div>
+    </div>
+
+    <div class="mini-map">
+      <canvas id="mini-map" aria-label="앞으로 이어질 곡선 코스 미니맵"></canvas>
+      <div class="mini-caption" id="mini-caption">0.0 / 0.0 km</div>
+    </div>
+
     <div class="landmark" id="landmark"></div>
     <div class="cam-toast" id="cam-toast"></div>
-    <div class="gapbar">
-      <div class="g" id="s-gap">0m</div>
-      <div class="lbl">페이스 보트 대비</div>
-    </div>
-    <div class="progress"><i id="s-prog"></i></div>
+    <div class="ble-race-alert" id="ble-race-alert"></div>
     <div class="race-ctl">
+      <button class="icon-btn" id="btn-sound" title="메트로놈 음소거" aria-label="메트로놈 음소거" aria-pressed="false">♪</button>
       <button class="icon-btn" id="btn-cam" title="카메라 전환">◳</button>
-      <button class="icon-btn" id="btn-quit">✕</button>
+      <button class="icon-btn" id="btn-quit" title="운동 종료" aria-label="운동 종료">✕</button>
     </div>
     <div class="simctl" id="simctl">
       <label>강도</label>
@@ -399,6 +583,22 @@
     <div style="height:12px"></div>
     <button id="btn-sum-history" class="btn ghost">기록 보기</button>
   </div>
+</section>
+
+<button class="ble-log-open" id="btn-log-open" type="button" hidden>BLE 로그 <span id="ble-log-count">0</span></button>
+<section class="ble-log" id="ble-log-panel" hidden aria-live="polite" aria-label="Bluetooth 연결 진단 로그">
+  <div class="ble-log-head">
+    <div>
+      <div class="ble-log-title">Bluetooth 연결 진단</div>
+      <div class="ble-log-state" id="ble-log-state">연결 단계가 여기에 표시됩니다</div>
+    </div>
+    <div class="ble-log-actions">
+      <button class="ble-mini-btn" id="btn-log-copy" type="button">복사</button>
+      <button class="ble-mini-btn" id="btn-log-clear" type="button">지우기</button>
+      <button class="ble-mini-btn" id="btn-log-close" type="button" aria-label="로그 닫기">닫기</button>
+    </div>
+  </div>
+  <ol class="ble-log-list" id="ble-log-list"></ol>
 </section>
 
 <script type="module" src="/src/main.ts"></script>

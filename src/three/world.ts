@@ -7,6 +7,12 @@ import {
   type WeatherBasePalette,
   type WeatherBlend,
 } from './weather'
+import {
+  createCoursePath,
+  offsetPathPoint,
+  PLAYER_LANE_OFFSET,
+  type CoursePath,
+} from '../game/coursePath'
 import type { Course, Landmark } from '../game/courses'
 
 /**
@@ -24,6 +30,8 @@ const SPECTATOR_COUNT = 6
 const DUCK_COUNT = 4
 const CLOUD_COUNT = 4
 const PROP_COUNT = 5
+const BANK_OUTER_Z = BANK_Z + 26
+const BANK_STEP = 8
 
 type Side = 1 | -1
 export type BankPropKind = 'cottage' | 'deer' | 'sheep' | 'heron'
@@ -49,13 +57,61 @@ interface LoopObject {
   baseZ: number
   span: number
   phase: number
+  baseYaw: number
   animated?: boolean
+}
+
+interface LandmarkNode {
+  obj: THREE.Object3D
+  lm: Landmark
+  lateral: number
+  baseYaw: number
 }
 
 /** 반복 배경 오브젝트를 [minX, minX + span) 안으로 감싼다. */
 export function wrappedLoopX(baseX: number, distance: number, span: number, minX: number) {
   const offset = ((baseX - distance - minX) % span + span) % span
   return minX + offset
+}
+
+/** 한쪽 강둑의 잔디 윗면과 물가 절벽을 하나의 저비용 리본으로 만든다. */
+function createBankRibbon(
+  path: CoursePath,
+  side: Side,
+  maxStation: number,
+  material: THREE.Material,
+) {
+  const start = -500
+  const count = Math.ceil((maxStation - start) / BANK_STEP) + 1
+  const positions = new Float32Array(count * 3 * 3)
+  const indices: number[] = []
+
+  for (let i = 0; i < count; i++) {
+    const station = start + i * BANK_STEP
+    const inner = offsetPathPoint(path, station, side * BANK_Z)
+    const outer = offsetPathPoint(path, station, side * BANK_OUTER_Z)
+    const offset = i * 9
+    positions.set([inner.x, 0.85, inner.z], offset)
+    positions.set([outer.x, 0.85, outer.z], offset + 3)
+    positions.set([inner.x, -0.35, inner.z], offset + 6)
+
+    if (i === count - 1) continue
+    const a = i * 3
+    const b = a + 1
+    const e = a + 2
+    const c = a + 3
+    const d = a + 4
+    const f = a + 5
+    indices.push(a, b, c, b, d, c)
+    indices.push(a, c, e, c, f, e)
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  geometry.computeBoundingSphere()
+  return new THREE.Mesh(geometry, material)
 }
 
 function hashString(value: string) {
@@ -306,19 +362,22 @@ export class World {
   }
   private baseWeatherPalette: WeatherBasePalette
   private weatherAppearance = createWeatherAppearance()
-  private trees: THREE.Object3D[] = []
-  private banks: THREE.Mesh[] = []
   private landmarkLeafMaterials: THREE.MeshStandardMaterial[] = []
   private spectators: LoopObject[] = []
   private ducks: LoopObject[] = []
   private clouds: LoopObject[] = []
   private bankProps: LoopObject[] = []
   private landmarkGroup = new THREE.Group()
-  private landmarkNodes: { obj: THREE.Object3D; lm: Landmark }[] = []
+  private landmarkNodes: LandmarkNode[] = []
   private course: Course
+  private path: CoursePath
+  private courseRoot = new THREE.Group()
+  private treeNodes: LoopObject[] = []
 
   constructor(course: Course, weatherSeed = `${course.id}:weather`) {
     this.course = course
+    this.path = createCoursePath(course.id)
+    this.scene.add(this.courseRoot)
     const p = course.venue.palette
     this.baseWeatherPalette = {
       skyTop: new THREE.Color(p.skyTop),
@@ -375,13 +434,12 @@ export class World {
 
     // ── 강둑 ────────────────────────────────────────────────
     this.bankMaterial = new THREE.MeshStandardMaterial({
-      color: p.land, flatShading: true, roughness: 0.9,
+      color: p.land, flatShading: true, roughness: 0.9, side: THREE.DoubleSide,
     })
-    for (const side of [1, -1]) {
-      const bank = new THREE.Mesh(new THREE.BoxGeometry(700, 1.2, 26), this.bankMaterial)
-      bank.position.set(0, 0.25, side * (BANK_Z + 13))
-      this.banks.push(bank)
-      this.scene.add(bank)
+    const maxStation = course.durationSec * 8 + 1_000
+    for (const side of [1, -1] as const) {
+      const bank = createBankRibbon(this.path, side, maxStation, this.bankMaterial)
+      this.courseRoot.add(bank)
     }
 
     // ── 나무 (반복 배치) ────────────────────────────────────
@@ -398,16 +456,25 @@ export class World {
       const leaves = new THREE.Mesh(new THREE.IcosahedronGeometry(h * 0.42, 0), this.leafMaterial)
       leaves.position.y = h * 0.62
       t.add(trunk, leaves)
-      t.position.set(0, 0.7, side * (BANK_Z + 2 + ((i * 53) % 70) / 10))
-      this.trees.push(t)
-      this.scene.add(t)
+      const lateral = side * (BANK_Z + 2 + ((i * 53) % 70) / 10)
+      t.position.set(0, 0.7, lateral)
+      this.treeNodes.push({
+        obj: t,
+        baseX: Math.floor(i / 2) * TREE_SPACING,
+        baseY: 0.7,
+        baseZ: lateral,
+        baseYaw: 0,
+        span: TREE_SPACING * (TREE_COUNT / 2),
+        phase: i * 0.73,
+      })
+      this.courseRoot.add(t)
     }
 
     // ── 살아 있는 강변 풍경 ────────────────────────────────
     this.buildScenery()
 
     // ── 랜드마크 ────────────────────────────────────────────
-    this.scene.add(this.landmarkGroup)
+    this.courseRoot.add(this.landmarkGroup)
     this.buildLandmarks()
 
     // ── 날씨 ────────────────────────────────────────────────
@@ -431,9 +498,10 @@ export class World {
       person.position.set(0, 0.85, item.z)
       person.scale.setScalar(item.scale)
       person.rotation.y = item.side > 0 ? 0 : Math.PI
-      this.scene.add(person)
+      this.courseRoot.add(person)
       this.spectators.push({
         obj: person, baseX: item.baseX, baseY: 0.85, baseZ: item.z,
+        baseYaw: person.rotation.y,
         span: spectatorSpan, phase: item.phase, animated: true,
       })
     }
@@ -447,9 +515,10 @@ export class World {
       duck.position.set(0, 0.15, item.z)
       duck.scale.setScalar(item.scale)
       duck.rotation.y = item.phase > Math.PI ? 0 : Math.PI
-      this.scene.add(duck)
+      this.courseRoot.add(duck)
       this.ducks.push({
         obj: duck, baseX: item.baseX, baseY: 0.15, baseZ: item.z,
+        baseYaw: duck.rotation.y,
         span: duckSpan, phase: item.phase, animated: true,
       })
     }
@@ -466,7 +535,7 @@ export class World {
       this.scene.add(cloud)
       this.clouds.push({
         obj: cloud, baseX: item.baseX, baseY: y, baseZ: item.z,
-        span: cloudSpan, phase: item.phase,
+        baseYaw: 0, span: cloudSpan, phase: item.phase,
       })
     })
 
@@ -500,9 +569,10 @@ export class World {
       }
       prop.position.set(0, 0.85, item.z)
       prop.scale.setScalar(item.scale)
-      this.scene.add(prop)
+      this.courseRoot.add(prop)
       this.bankProps.push({
         obj: prop, baseX: item.baseX, baseY: 0.85, baseZ: item.z,
+        baseYaw: prop.rotation.y,
         // 각 종류의 반복 주기를 다르게 두어 전체 풍경이 같은 조합으로 되풀이되지 않게 한다.
         span: propSpan + index * 37, phase: item.phase, animated: item.kind !== 'cottage',
       })
@@ -598,9 +668,36 @@ export class World {
           break
         }
       }
+      const lateral = g.position.z
       this.landmarkGroup.add(g)
-      this.landmarkNodes.push({ obj: g, lm })
+      this.landmarkNodes.push({
+        obj: g,
+        lm,
+        lateral,
+        baseYaw: g.rotation.y,
+      })
     }
+  }
+
+  private placeOnPath(obj: THREE.Object3D, station: number, lateral: number, baseYaw: number) {
+    const point = offsetPathPoint(this.path, station, lateral)
+    obj.position.x = point.x
+    obj.position.z = point.z
+    // Three.js의 +Y 회전 부호는 수학적 XZ heading과 반대이다.
+    obj.rotation.y = baseYaw - point.heading
+  }
+
+  /** 현재 플레이어 레인의 접선이 로컬 +X가 되도록 코스 전체를 한 번에 역변환한다. */
+  private alignCourseRoot(distance: number) {
+    const origin = offsetPathPoint(this.path, distance, PLAYER_LANE_OFFSET)
+    const c = Math.cos(origin.heading)
+    const s = Math.sin(origin.heading)
+    this.courseRoot.rotation.y = origin.heading
+    this.courseRoot.position.set(
+      -(origin.x * c + origin.z * s),
+      0,
+      -(-origin.x * s + origin.z * c),
+    )
   }
 
   /**
@@ -620,31 +717,33 @@ export class World {
     this.sky.position.x = cameraX
 
     // 나무: 일정 간격으로 반복시키고 뒤로 흘린다
-    const span = TREE_SPACING * (TREE_COUNT / 2)
-    for (let i = 0; i < this.trees.length; i++) {
-      const base = Math.floor(i / 2) * TREE_SPACING
-      this.trees[i]!.position.x = wrappedLoopX(base, distance, span, -span * 0.35)
-      this.trees[i]!.rotation.z = Math.sin(animationTimeSec * 1.5 + i * 0.73)
+    for (let i = 0; i < this.treeNodes.length; i++) {
+      const node = this.treeNodes[i]!
+      const along = wrappedLoopX(node.baseX, distance, node.span, -node.span * 0.35)
+      this.placeOnPath(node.obj, distance + along, node.baseZ, node.baseYaw)
+      node.obj.position.y = node.baseY
+      node.obj.rotation.z = Math.sin(animationTimeSec * 1.5 + node.phase)
         * weather.windStrength * 0.038
     }
 
     // 응원객은 강둑을 따라 반복되고, 팔을 든 채 가볍게 점프한다
     for (const node of this.spectators) {
-      node.obj.position.x = wrappedLoopX(node.baseX, distance, node.span, -68)
+      const along = wrappedLoopX(node.baseX, distance, node.span, -68)
+      this.placeOnPath(node.obj, distance + along, node.baseZ, node.baseYaw)
       node.obj.position.y = node.baseY
         + Math.max(0, Math.sin(animationTimeSec * 3.2 + node.phase)) * 0.055
-      node.obj.position.z = node.baseZ
       node.obj.rotation.z = Math.sin(animationTimeSec * 2.7 + node.phase) * 0.025
         + Math.sin(animationTimeSec * 1.2 + node.phase) * weather.windStrength * 0.018
     }
 
     // 오리는 물 위를 천천히 헤엄치며 위아래로 떠오른다
     for (const node of this.ducks) {
-      node.obj.position.x = wrappedLoopX(
+      const along = wrappedLoopX(
         node.baseX, distance - animationTimeSec * 0.32, node.span, -72,
       )
+      const lateral = node.baseZ + Math.sin(animationTimeSec * 0.55 + node.phase) * 0.24
+      this.placeOnPath(node.obj, distance + along, lateral, node.baseYaw)
       node.obj.position.y = node.baseY + Math.sin(animationTimeSec * 2.1 + node.phase) * 0.035
-      node.obj.position.z = node.baseZ + Math.sin(animationTimeSec * 0.55 + node.phase) * 0.24
       node.obj.rotation.z = Math.sin(animationTimeSec * 1.35 + node.phase) * 0.035
     }
 
@@ -663,22 +762,22 @@ export class World {
 
     // 오두막과 동물은 고정 풀을 재활용한다 — 긴 코스에서도 오브젝트 수가 늘지 않는다
     for (const node of this.bankProps) {
-      node.obj.position.x = wrappedLoopX(node.baseX, distance, node.span, -82)
+      const along = wrappedLoopX(node.baseX, distance, node.span, -82)
+      this.placeOnPath(node.obj, distance + along, node.baseZ, node.baseYaw)
       node.obj.position.y = node.baseY + (node.animated
         ? Math.sin(animationTimeSec * 1.4 + node.phase) * 0.018
         : 0)
-      node.obj.position.z = node.baseZ
     }
-
-    // 강둑은 카메라를 따라다니게 해서 끝이 안 보이게 한다
-    for (const b of this.banks) b.position.x = cameraX
 
     // 랜드마크: 코스상 위치 - 현재 거리
-    for (const { obj, lm } of this.landmarkNodes) {
-      const x = lm.at * total - distance
-      obj.position.x = x
-      obj.visible = x > -60 && x < 300
+    for (const { obj, lm, lateral, baseYaw } of this.landmarkNodes) {
+      const station = lm.at * total
+      const along = station - distance
+      this.placeOnPath(obj, station, lateral, baseYaw)
+      obj.visible = along > -60 && along < 300
     }
+
+    this.alignCourseRoot(distance)
   }
 
   /** 화면에 보이는 랜드마크 중 가장 가까운 것 (이름표 표시용) */
