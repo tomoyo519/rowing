@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { diagnoseBluetoothError, FtmsSource } from './connection'
-import { CHAR, FTMS_SERVICE, HEART_RATE_SERVICE } from './ftms'
+import { CHAR, FTMS_SERVICE } from './ftms'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -11,6 +11,7 @@ function stubBrowser(requestDevice: (options?: RequestDeviceOptions) => Promise<
   vi.stubGlobal('navigator', {
     bluetooth: { requestDevice },
     userAgent: 'makeRowing BLE test browser',
+    userActivation: { isActive: true },
   })
   vi.stubGlobal('location', { origin: 'https://rowing.test' })
   vi.stubGlobal('window', {
@@ -78,6 +79,18 @@ describe('Bluetooth 오류 진단', () => {
     expect(diagnosis.technical).toContain('42')
   })
 
+  it('Bluefy 네이티브 브리지의 일반 객체 오류도 이름·코드·원문을 보존한다', () => {
+    const diagnosis = diagnoseBluetoothError({
+      name: 'NotAllowedError',
+      message: 'native bridge denied',
+      code: 2,
+    })
+    expect(diagnosis.name).toBe('NotAllowedError')
+    expect(diagnosis.technical).toContain('native bridge denied')
+    expect(diagnosis.technical).toContain('code=2')
+    expect(diagnosis.technical).toContain('raw=')
+  })
+
   it('성공 연결의 chooser부터 notifications까지 단계 코드를 순서대로 남긴다', async () => {
     const { device } = successfulDevice()
     const requestDevice = vi.fn(async () => device)
@@ -88,8 +101,8 @@ describe('Bluetooth 오류 진단', () => {
 
     await source.connect()
     expect(codes).toEqual([
-      'attempt.start', 'preflight.bluetooth', 'preflight.secure',
-      'chooser.request.ftms', 'chooser.selected',
+      'attempt.start', 'preflight.bluetooth', 'preflight.secure', 'preflight.policy',
+      'chooser.request.ftms', 'chooser.invoke', 'chooser.promise.returned', 'chooser.selected',
       'gatt.connect.start', 'gatt.connect.ok',
       'service.ftms.start', 'service.ftms.ok',
       'feature.read.start', 'feature.read.ok',
@@ -98,7 +111,6 @@ describe('Bluetooth 오류 진단', () => {
     ])
     expect(requestDevice).toHaveBeenCalledWith({
       filters: [{ services: [FTMS_SERVICE] }],
-      optionalServices: [HEART_RATE_SERVICE],
     })
     expect(source.status).toBe('connected')
     await source.disconnect()
@@ -116,7 +128,7 @@ describe('Bluetooth 오류 진단', () => {
 
     expect(requestDevice).toHaveBeenCalledWith({
       acceptAllDevices: true,
-      optionalServices: [FTMS_SERVICE, HEART_RATE_SERVICE],
+      optionalServices: [FTMS_SERVICE],
     })
     expect(codes).toContain('chooser.request.all')
     await source.disconnect()

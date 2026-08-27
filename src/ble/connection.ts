@@ -1,4 +1,4 @@
-import { FTMS_SERVICE, HEART_RATE_SERVICE, CHAR } from './ftms'
+import { FTMS_SERVICE, CHAR } from './ftms'
 import { parseRowerData, hexdump } from './rowerData'
 import type { RowerSample, RowerSource, SourceStatus } from '../types'
 
@@ -24,10 +24,37 @@ export interface BluetoothErrorDiagnosis {
   technical: string
 }
 
+function getNativeErrorDetails(error: unknown): { name: string; technical: string } {
+  if (error instanceof Error) return { name: error.name || 'Error', technical: error.message }
+  if (typeof error !== 'object' || error === null) {
+    return { name: 'UnknownError', technical: String(error) }
+  }
+
+  const record = error as Record<string, unknown>
+  const nativeName = typeof record.name === 'string' && record.name ? record.name : 'UnknownError'
+  const parts: string[] = []
+  if (typeof record.message === 'string' && record.message) parts.push(record.message)
+  if ('code' in record) parts.push(`code=${String(record.code)}`)
+  try {
+    const serialized = JSON.stringify(error)
+    if (serialized && serialized !== '{}') parts.push(`raw=${serialized}`)
+  } catch {
+    parts.push(`raw=${Object.prototype.toString.call(error)}`)
+  }
+  return {
+    name: nativeName,
+    technical: parts.join(' | ') || Object.prototype.toString.call(error),
+  }
+}
+
+function formatNativeError(error: unknown): string {
+  const detail = getNativeErrorDetails(error)
+  return `${detail.name}: ${detail.technical}`
+}
+
 /** DOMException 이름을 사용자가 바로 행동할 수 있는 설명으로 바꾼다. */
 export function diagnoseBluetoothError(error: unknown): BluetoothErrorDiagnosis {
-  const name = error instanceof Error ? error.name : 'UnknownError'
-  const technical = error instanceof Error ? error.message : String(error)
+  const { name, technical } = getNativeErrorDetails(error)
   switch (name) {
     case 'NotFoundError':
       return {
@@ -139,6 +166,28 @@ export class FtmsSource implements RowerSource {
       window.isSecureContext ? 'HTTPS 보안 연결을 확인했습니다.' : 'HTTPS 보안 연결이 아닙니다.',
       location.origin,
     )
+    const policyDocument = (typeof document === 'undefined' ? undefined : document) as (Document & {
+      permissionsPolicy?: { allowsFeature?: (feature: string) => boolean }
+      featurePolicy?: { allowsFeature?: (feature: string) => boolean }
+    }) | undefined
+    try {
+      const permissionsPolicy = policyDocument?.permissionsPolicy ?? policyDocument?.featurePolicy
+      const bluetoothPolicyAllowed = permissionsPolicy?.allowsFeature?.('bluetooth')
+      this.log(
+        bluetoothPolicyAllowed === false ? 'error' : 'info',
+        'preflight.policy',
+        bluetoothPolicyAllowed === false
+          ? '이 페이지의 Permissions Policy가 Bluetooth를 차단하고 있습니다.'
+          : '페이지의 Bluetooth 정책 차단은 확인되지 않았습니다.',
+        bluetoothPolicyAllowed === undefined ? '정책 API를 제공하지 않는 브라우저입니다.' : `bluetooth=${bluetoothPolicyAllowed}`,
+      )
+    } catch (error) {
+      this.log(
+        'warning', 'preflight.policy.unavailable',
+        '브라우저의 Bluetooth 정책 상태는 읽지 못했지만 연결을 계속합니다.',
+        formatNativeError(error),
+      )
+    }
 
     if (!navigator.bluetooth) {
       const error = new DOMException('Web Bluetooth API unavailable', 'NotSupportedError')
@@ -162,26 +211,44 @@ export class FtmsSource implements RowerSource {
           ? '주변 Bluetooth 기기 선택창 표시를 요청했습니다. 목록에서 로잉머신을 선택하세요.'
           : 'FTMS 로잉머신 선택창 표시를 요청했습니다.',
       )
+      const requestOptions: RequestDeviceOptions = scanMode === 'all'
+        ? {
+            acceptAllDevices: true,
+            // 전체 검색에서는 선택 뒤 접근할 서비스를 반드시 optionalServices에 선언해야 한다.
+            optionalServices: [FTMS_SERVICE],
+          }
+        : {
+            filters: [{ services: [FTMS_SERVICE] }],
+          }
+      this.log(
+        'info', 'chooser.invoke',
+        'Bluefy의 requestDevice()를 지금 호출합니다.',
+        `userActivation=${navigator.userActivation?.isActive ?? 'unknown'} | options=${JSON.stringify(requestOptions)}`,
+      )
       const chooserWaitTimer = window.setTimeout(() => {
         this.log(
           'warning', 'chooser.waiting',
           '7초가 지나도 기기 선택이 완료되지 않았습니다.',
-          '선택창이 보이지 않으면 Bluefy의 Bluetooth 권한을 확인한 뒤 페이지를 새로고침하세요. Safari나 ChatGPT 내부 브라우저에서는 선택창이 뜨지 않습니다.',
+          '선택창이 보이지 않으면 Bluefy의 위치 권한도 확인하고 앱을 완전히 종료한 뒤 다시 여세요. Safari나 ChatGPT 내부 브라우저에서는 선택창이 뜨지 않습니다.',
         )
       }, 7_000)
       try {
-        this.device = await navigator.bluetooth.requestDevice(
-          scanMode === 'all'
-            ? {
-                acceptAllDevices: true,
-                // 전체 검색에서는 선택 뒤 접근할 서비스를 반드시 optionalServices에 선언해야 한다.
-                optionalServices: [FTMS_SERVICE, HEART_RATE_SERVICE],
-              }
-            : {
-                filters: [{ services: [FTMS_SERVICE] }],
-                optionalServices: [HEART_RATE_SERVICE],
-              },
-        )
+        let pendingDevice: Promise<BluetoothDevice>
+        try {
+          pendingDevice = navigator.bluetooth.requestDevice(requestOptions)
+          this.log(
+            'success', 'chooser.promise.returned',
+            'Bluefy가 requestDevice() 호출을 받았습니다. 기기 선택 응답을 기다립니다.',
+          )
+        } catch (error) {
+          this.log(
+            'error', 'chooser.throw.sync',
+            'Bluefy가 기기 선택 요청을 받는 즉시 오류를 반환했습니다.',
+            formatNativeError(error),
+          )
+          throw error
+        }
+        this.device = await pendingDevice
       } finally {
         window.clearTimeout(chooserWaitTimer)
       }

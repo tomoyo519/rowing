@@ -146,7 +146,25 @@ async function connectBle(scanMode: BleScanMode) {
   const src = new FtmsSource()
   src.onDiagnostic(appendBleLog)
   src.onStatus((s, d) => {
-    if (s === 'error') err.textContent = d ?? '연결에 실패했습니다'
+    if (s === 'error') {
+      err.textContent = d ?? '연결에 실패했습니다'
+      $('ble-log-panel').hidden = false   // 실패했으면 로그를 다시 펼쳐 원인을 보여준다
+    }
+    // 자동 재연결이 생기면서 예기치 않은 끊김은 'disconnected'가 아니라 'reconnecting'으로 온다.
+    // 이걸 안 잡으면 연결이 끊겨도 화면에 아무것도 안 뜬다.
+    if (s === 'reconnecting') {
+      err.textContent = '연결이 끊어져 다시 연결하는 중입니다…'
+      $('ble-log-panel').hidden = false
+      if ($('screen-race').classList.contains('active')) {
+        const alert = $('ble-race-alert')
+        alert.textContent = '로잉머신 연결이 끊어졌습니다. 자동으로 다시 연결하는 중입니다.'
+        alert.classList.add('on')
+      }
+    }
+    if (s === 'connected') {
+      err.textContent = ''
+      $('ble-race-alert').classList.remove('on')
+    }
     if (s === 'disconnected') {
       err.textContent = '로잉머신 연결이 끊어졌습니다'
       if ($('screen-race').classList.contains('active')) {

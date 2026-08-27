@@ -16,7 +16,7 @@
     "shot": "node tools/shot.mjs shots"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/vite-plugin": "^1.54.0",
     "@openai/sites-vite-plugin": "0.1.0",
     "@types/three": "^0.185.4",
     "@types/web-bluetooth": "^0.0.21",
@@ -24,7 +24,7 @@
     "typescript": "^7.0.2",
     "vite": "8.0.13",
     "vitest": "^3.2.7",
-    "wrangler": "4.92.0"
+    "wrangler": "^4.126.0"
   },
   "dependencies": {
     "three": "^0.185.1"
