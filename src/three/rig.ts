@@ -34,8 +34,104 @@ const OUTBOARD = 1.90
 const PHI_DRIVE = 0.215     // 블레이드가 수면에 잠김
 const PHI_RECOVERY = 0.145  // 블레이드가 수면 위로 뜸
 
+export const RACING_HULL_LENGTH = 8.2
+
+/** 선체 길이의 0..1 위치에서 반폭. 양 끝은 가늘고 중앙은 넓은 싱글스컬 형상이다. */
+export function racingHullHalfWidthAt(t: number) {
+  const station = clamp(t, 0, 1)
+  return 0.012 + 0.176 * Math.pow(Math.sin(station * Math.PI), 0.58)
+}
+
+/** 캡슐 대신 뱃머리와 선미가 뾰족한 실제 레이싱 셸 실루엣을 만든다. */
+export function createRacingHullGeometry() {
+  const sections = 17
+  const ringSegments = 10
+  const positions: number[] = []
+  const indices: number[] = []
+
+  for (let i = 0; i < sections; i++) {
+    const t = i / (sections - 1)
+    const fullness = Math.pow(Math.sin(t * Math.PI), 0.62)
+    const x = (t - 0.5) * RACING_HULL_LENGTH
+    const halfWidth = racingHullHalfWidthAt(t)
+    const halfHeight = 0.026 + fullness * 0.082
+    const centerY = 0.055 + fullness * 0.012
+    for (let j = 0; j < ringSegments; j++) {
+      const angle = (j / ringSegments) * Math.PI * 2
+      // 윗면을 조금 평평하게 눌러 얇은 데크와 깊은 킬이 함께 보이게 한다.
+      const sin = Math.sin(angle)
+      const yScale = sin > 0 ? 0.82 : 1.08
+      positions.push(
+        x,
+        centerY + sin * halfHeight * yScale,
+        Math.cos(angle) * halfWidth,
+      )
+    }
+  }
+
+  for (let i = 0; i < sections - 1; i++) {
+    for (let j = 0; j < ringSegments; j++) {
+      const next = (j + 1) % ringSegments
+      const a = i * ringSegments + j
+      const b = i * ringSegments + next
+      const c = (i + 1) * ringSegments + j
+      const d = (i + 1) * ringSegments + next
+      indices.push(a, c, b, b, c, d)
+    }
+  }
+
+  // 정중앙 후방 카메라에서도 열린 단면이 보이지 않도록 양 끝을 막는다.
+  const startCenter = positions.length / 3
+  positions.push(-RACING_HULL_LENGTH / 2, 0.055, 0)
+  const endCenter = positions.length / 3
+  positions.push(RACING_HULL_LENGTH / 2, 0.055, 0)
+  const endRing = (sections - 1) * ringSegments
+  for (let j = 0; j < ringSegments; j++) {
+    const next = (j + 1) % ringSegments
+    indices.push(startCenter, j, next)
+    indices.push(endCenter, endRing + next, endRing + j)
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  geometry.computeBoundingBox()
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/** 가느다란 목에서 바깥쪽 끝으로 넓어지는 마콘형 스컬 블레이드. */
+function createOarBladeGeometry() {
+  const levels: [number, number][] = [
+    [-0.26, 0.045], [-0.13, 0.075], [0.08, 0.14], [0.26, 0.17],
+  ]
+  const depth = 0.014
+  const positions: number[] = []
+  for (const [y, halfWidth] of levels) {
+    positions.push(-halfWidth, y, -depth, halfWidth, y, -depth)
+    positions.push(-halfWidth, y, depth, halfWidth, y, depth)
+  }
+  const indices: number[] = []
+  for (let i = 0; i < levels.length - 1; i++) {
+    const a = i * 4, b = a + 1, c = a + 2, d = a + 3
+    const e = a + 4, f = a + 5, h = a + 6, k = a + 7
+    indices.push(a, e, b, b, e, f, c, d, h, d, k, h)
+    indices.push(a, c, e, c, h, e, b, f, d, d, f, k)
+  }
+  indices.push(0, 1, 2, 1, 3, 2)
+  const last = (levels.length - 1) * 4
+  indices.push(last, last + 2, last + 1, last + 1, last + 2, last + 3)
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
 export interface RigColors {
   hull: string
+  trim: string
   jersey: string
   /** 하의. 상의와 같은 색이면 몸이 한 덩어리로 뭉쳐 보인다 */
   shorts: string
@@ -45,17 +141,17 @@ export interface RigColors {
 }
 
 export const COLORS_PLAYER: RigColors = {
-  hull: '#f0f3f7', jersey: '#ff5a3c', shorts: '#1f2c3a', skin: '#e8b48c',
-  oar: '#e4e9ef', blade: '#ff5a3c',
+  hull: '#112b40', trim: '#dce5e8', jersey: '#edf1f2', shorts: '#17283a', skin: '#e8b48c',
+  oar: '#172737', blade: '#e8edef',
 }
 /** 고스트(지난 내 최고 기록) — 금빛으로 구분한다. 페이스 보트의 회색과 안 헷갈린다. */
 export const COLORS_GHOST: RigColors = {
-  hull: '#f5e3b8', jersey: '#e0a33a', shorts: '#5a4526', skin: '#d9c39a',
+  hull: '#8a672d', trim: '#f5e3b8', jersey: '#e0a33a', shorts: '#5a4526', skin: '#d9c39a',
   oar: '#e8d5a8', blade: '#e0a33a',
 }
 
 export const COLORS_PACE: RigColors = {
-  hull: '#59636f', jersey: '#828d9a', shorts: '#414b56', skin: '#98a2ac',
+  hull: '#35414d', trim: '#aeb8c1', jersey: '#828d9a', shorts: '#414b56', skin: '#98a2ac',
   oar: '#6d7885', blade: '#828d9a',
 }
 
@@ -79,6 +175,8 @@ export interface Joints {
 
 export class Rig {
   readonly group = new THREE.Group()
+  /** 보트만 선회/롤하고 물에 남은 퍼들은 수평을 유지하도록 분리한 루트. */
+  private visualRoot = new THREE.Group()
 
   /** apply() 직후의 관절 위치 (보트 로컬 좌표) */
   readonly joints: Joints = {
@@ -96,49 +194,62 @@ export class Rig {
   private pelvis!: THREE.Mesh
   private torso!: THREE.Mesh
   private head!: THREE.Mesh
+  private neck!: THREE.Mesh
+  private hair!: THREE.Mesh
   private thigh: THREE.Mesh[] = []
   private shin: THREE.Mesh[] = []
   private upperArm: THREE.Mesh[] = []
   private forearm: THREE.Mesh[] = []
   private oarShaft: THREE.Mesh[] = []
   private oarBlade: THREE.Mesh[] = []
+  private hands: THREE.Mesh[] = []
+  private shoes: THREE.Mesh[] = []
+  private collars: THREE.Mesh[] = []
   private splash: THREE.Mesh[] = []
+  private wake!: THREE.Mesh
   /** 물에 남는 퍼들 — 월드에 남아 뒤로 흘러간다 */
   private puddles: { mesh: THREE.Mesh; life: number }[] = []
   private puddleGroup = new THREE.Group()
   private wasInWater = false
 
   constructor(colors: RigColors, private opacity = 1) {
+    this.group.add(this.visualRoot, this.puddleGroup)
     this.build(colors)
-    this.group.add(this.puddleGroup)
   }
 
   private mat(color: string, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) {
     return new THREE.MeshStandardMaterial({
-      color, flatShading: true, roughness: 0.62, metalness: 0.05,
+      color, flatShading: false, roughness: 0.62, metalness: 0.05,
       transparent: this.opacity < 1, opacity: this.opacity,
       ...extra,
     })
   }
 
   private build(c: RigColors) {
-    const g = this.group
+    const g = this.visualRoot
 
     // ── 선체 ────────────────────────────────────────────────
-    const hullGeo = new THREE.CapsuleGeometry(0.20, 7.0, 4, 14)
-    hullGeo.rotateZ(Math.PI / 2)
-    hullGeo.scale(1, 0.52, 1)
-    this.hull = new THREE.Mesh(hullGeo, this.mat(c.hull, { roughness: 0.35 }))
-    this.hull.position.set(0.1, 0.06, 0)
+    this.hull = new THREE.Mesh(
+      createRacingHullGeometry(),
+      this.mat(c.hull, { roughness: 0.28, metalness: 0.12 }),
+    )
+    this.hull.position.set(0.1, 0.02, 0)
     g.add(this.hull)
 
-    // 좌석 트랙
-    const track = new THREE.Mesh(
-      new THREE.BoxGeometry(0.95, 0.03, 0.16),
-      this.mat('#3d4650'),
-    )
-    track.position.set(-0.04, 0.17, 0)
-    g.add(track)
+    // 밝은 중앙 데크와 어두운 콕핏이 길고 얇은 레이싱 셸의 형태를 읽히게 한다.
+    const deckGeo = new THREE.CapsuleGeometry(0.075, 7.0, 3, 12)
+    deckGeo.rotateZ(Math.PI / 2)
+    deckGeo.scale(1, 0.18, 1)
+    const deck = new THREE.Mesh(deckGeo, this.mat(c.trim, { roughness: 0.34 }))
+    deck.position.set(0.12, 0.151, 0)
+    g.add(deck)
+
+    const cockpitGeo = new THREE.CapsuleGeometry(0.14, 0.72, 3, 10)
+    cockpitGeo.rotateZ(Math.PI / 2)
+    cockpitGeo.scale(1, 0.18, 1)
+    const cockpit = new THREE.Mesh(cockpitGeo, this.mat('#101820', { roughness: 0.7 }))
+    cockpit.position.set(-0.08, 0.174, 0)
+    g.add(cockpit)
 
     // 발판
     const stretcher = new THREE.Mesh(
@@ -149,15 +260,22 @@ export class Rig {
     stretcher.rotation.z = -0.35
     g.add(stretcher)
 
-    // 리거 — 노받이를 선체 밖으로 뻗어주는 팔
+    // 삼각형 윙 리거 — 한 줄 막대보다 실제 스컬의 구조와 폭이 잘 보인다.
     for (const side of [1, -1]) {
-      const rigger = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.022, 0.022, LOCK.z - 0.1, 6),
-        this.mat('#4a545f'),
+      const lock = new THREE.Vector3(LOCK.x, LOCK.y, side * LOCK.z)
+      const riggerMaterial = this.mat('#4a545f', { metalness: 0.32, roughness: 0.42 })
+      const front = cylinderBetween(
+        new THREE.Vector3(0.12, 0.22, side * 0.15), lock, 0.018, riggerMaterial,
       )
-      rigger.rotation.x = Math.PI / 2
-      rigger.position.set(LOCK.x, LOCK.y - 0.06, side * (LOCK.z + 0.05) / 2)
-      g.add(rigger)
+      const rear = cylinderBetween(
+        new THREE.Vector3(-0.69, 0.22, side * 0.15), lock, 0.018, riggerMaterial,
+      )
+      const oarlock = new THREE.Mesh(
+        new THREE.TorusGeometry(0.052, 0.012, 6, 10), riggerMaterial,
+      )
+      oarlock.rotation.x = Math.PI / 2
+      oarlock.position.copy(lock)
+      g.add(front, rear, oarlock)
     }
 
     // ── 사람 ────────────────────────────────────────────────
@@ -167,18 +285,33 @@ export class Rig {
     this.pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.16, 0.30), this.mat(c.shorts))
     g.add(this.pelvis)
 
-    this.torso = new THREE.Mesh(capsule(0.145, TORSO), this.mat(c.jersey))
+    // 어깨가 넓고 허리가 가는 상체라 정면/후면에서도 사람 실루엣이 선명하다.
+    this.torso = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.17, 0.115, TORSO, 10), this.mat(c.jersey),
+    )
     g.add(this.torso)
 
     this.head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.115, 1), this.mat(c.skin))
-    g.add(this.head)
+    this.neck = new THREE.Mesh(capsule(0.052, 0.12), this.mat(c.skin))
+    this.hair = new THREE.Mesh(
+      new THREE.SphereGeometry(0.118, 10, 7), this.mat('#171c25', { roughness: 0.8 }),
+    )
+    this.hair.scale.set(1, 0.52, 1.02)
+    g.add(this.neck, this.head, this.hair)
 
     for (let i = 0; i < 2; i++) {
-      this.thigh.push(new THREE.Mesh(capsule(0.085, THIGH), this.mat(c.shorts)))
+      this.thigh.push(new THREE.Mesh(capsule(0.085, THIGH), this.mat(c.skin)))
       this.shin.push(new THREE.Mesh(capsule(0.070, SHIN), this.mat(c.skin)))
-      this.upperArm.push(new THREE.Mesh(capsule(0.058, UPPER_ARM), this.mat(c.skin)))
+      this.upperArm.push(new THREE.Mesh(capsule(0.058, UPPER_ARM), this.mat(c.jersey)))
       this.forearm.push(new THREE.Mesh(capsule(0.050, FOREARM), this.mat(c.skin)))
-      g.add(this.thigh[i]!, this.shin[i]!, this.upperArm[i]!, this.forearm[i]!)
+      this.hands.push(new THREE.Mesh(new THREE.SphereGeometry(0.058, 8, 6), this.mat(c.skin)))
+      this.shoes.push(new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 0.075, 0.11), this.mat('#202a36', { roughness: 0.78 }),
+      ))
+      g.add(
+        this.thigh[i]!, this.shin[i]!, this.upperArm[i]!, this.forearm[i]!,
+        this.hands[i]!, this.shoes[i]!,
+      )
     }
 
     // ── 노 ──────────────────────────────────────────────────
@@ -187,11 +320,15 @@ export class Rig {
         new THREE.CylinderGeometry(0.022, 0.030, INBOARD + OUTBOARD, 7),
         this.mat(c.oar, { roughness: 0.4 }),
       )
-      // 실제 스컬 블레이드에 가깝게 — 멀리서도 물을 잡는 게 보여야 한다
-      const bladeGeo = new THREE.BoxGeometry(0.50, 0.03, 0.24)
-      const blade = new THREE.Mesh(bladeGeo, this.mat(c.blade, { roughness: 0.35 }))
+      const blade = new THREE.Mesh(
+        createOarBladeGeometry(), this.mat(c.blade, { roughness: 0.35 }),
+      )
+      const collar = new THREE.Mesh(
+        new THREE.SphereGeometry(0.052, 8, 6), this.mat(c.trim, { roughness: 0.45 }),
+      )
       this.oarShaft.push(shaft)
       this.oarBlade.push(blade)
+      this.collars.push(collar)
 
       const sp = new THREE.Mesh(
         new THREE.SphereGeometry(0.16, 10, 7),
@@ -201,8 +338,22 @@ export class Rig {
       )
       sp.scale.set(1, 0.35, 1)
       this.splash.push(sp)
-      g.add(shaft, blade, sp)
+      g.add(shaft, blade, collar, sp)
     }
+
+    const wakeGeometry = new THREE.BufferGeometry()
+    wakeGeometry.setAttribute('position', new THREE.Float32BufferAttribute([
+      -0.4, 0.105, 0, -4.4, 0.105, 0.48, -4.4, 0.105, -0.48,
+    ], 3))
+    this.wake = new THREE.Mesh(
+      wakeGeometry,
+      new THREE.MeshBasicMaterial({
+        color: '#d9f1f7', transparent: true, opacity: 0,
+        depthWrite: false, side: THREE.DoubleSide,
+      }),
+    )
+    this.wake.renderOrder = 1
+    g.add(this.wake)
   }
 
   /**
@@ -227,8 +378,15 @@ export class Rig {
     const headPos = shoulder.clone().add(
       new THREE.Vector3(-sh, ch, 0).multiplyScalar(0.20),
     )
+    const bodyAxis = new THREE.Vector3(-sh, ch, 0)
+    const neckStart = shoulder.clone().addScaledVector(bodyAxis, 0.015)
+    const neckEnd = headPos.clone().addScaledVector(bodyAxis, -0.095)
+    place(this.neck, neckStart, neckEnd, 0.12)
     this.head.position.copy(headPos)
-    this.head.rotation.z = pose.bodyAngle * 0.7
+    // 몸을 숙여도 고개는 거의 수평을 유지해 후방 카메라에서 얼굴이 잘 보이게 한다.
+    this.head.rotation.z = pose.bodyAngle * 0.2
+    this.hair.position.copy(headPos).addScaledVector(bodyAxis, 0.070)
+    this.hair.rotation.z = pose.bodyAngle * 0.2
 
     this.joints.hip.copy(hip)
     this.joints.shoulder.copy(shoulder)
@@ -259,7 +417,9 @@ export class Rig {
 
       place(this.oarShaft[i]!, handle, blade, INBOARD + OUTBOARD)
       this.oarBlade[i]!.position.copy(blade)
-      this.oarBlade[i]!.rotation.set(0, -theta, 0)
+      const bladeTip = blade.clone().addScaledVector(dir, -0.52)
+      place(this.oarBlade[i]!, blade, bladeTip, 0.52)
+      this.collars[i]!.position.copy(lock).addScaledVector(dir, 0.035)
 
       // ── 팔 IK: 어깨 → 손잡이 ────────────────────────────
       const shoulderPt = new THREE.Vector3(shoulder.x, shoulder.y, side * SHOULDER_HALF)
@@ -268,6 +428,7 @@ export class Rig {
       this.joints.elbow[i]!.copy(elbow)
       place(this.upperArm[i]!, shoulderPt, elbow, UPPER_ARM)
       place(this.forearm[i]!, elbow, handle, FOREARM)
+      this.hands[i]!.position.copy(handle)
 
       // ── 다리 IK: 엉덩이 → 발 ────────────────────────────
       const hipPt = new THREE.Vector3(hipX, SEAT_Y, side * HIP_HALF)
@@ -277,6 +438,8 @@ export class Rig {
       this.joints.foot[i]!.copy(footPt)
       place(this.thigh[i]!, hipPt, knee, THIGH)
       place(this.shin[i]!, knee, footPt, SHIN)
+      this.shoes[i]!.position.set(footPt.x - 0.035, footPt.y + 0.005, footPt.z)
+      this.shoes[i]!.rotation.z = -0.35
 
       // ── 물보라 ──────────────────────────────────────────
       const spMat = this.splash[i]!.material as THREE.MeshBasicMaterial
@@ -294,6 +457,19 @@ export class Rig {
     if (pose.inWater && !this.wasInWater) this.dropPuddles(theta)
     this.wasInWater = pose.inWater
     this.updatePuddles(dt, speed)
+
+    const wakeMaterial = this.wake.material as THREE.MeshBasicMaterial
+    const moving = Math.min(1, Math.max(0, speed / 4.8))
+    wakeMaterial.opacity = moving * 0.20 * this.opacity
+    this.wake.scale.x = 0.72 + moving * 0.55
+  }
+
+  /** 곡선에서 보트 본체만 선회하고 안쪽으로 살짝 기울인다. */
+  setCourseAttitude(yaw: number, lean: number) {
+    this.visualRoot.rotation.order = 'YXZ'
+    this.visualRoot.rotation.y = yaw
+    this.visualRoot.rotation.x = lean
+    this.visualRoot.rotation.z = 0
   }
 
   private dropPuddles(theta: number) {
@@ -363,6 +539,20 @@ export class Rig {
 /** Y축 방향 캡슐. place()가 두 점 사이에 맞춰준다. */
 function capsule(r: number, len: number) {
   return new THREE.CapsuleGeometry(r, Math.max(0.01, len - r * 2), 3, 8)
+}
+
+function cylinderBetween(
+  from: THREE.Vector3,
+  to: THREE.Vector3,
+  radius: number,
+  material: THREE.Material,
+) {
+  const length = from.distanceTo(to)
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, length, 7), material,
+  )
+  place(mesh, from, to, length)
+  return mesh
 }
 
 /** 캡슐/실린더를 from→to 사이에 배치 */

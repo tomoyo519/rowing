@@ -14,6 +14,7 @@ import { View } from './three/view'
 import { formatSplit, formatSplitShort, formatClock } from './game/physics'
 import { RowingMetronome } from './audio/metronome'
 import { AudioCues } from './audio/cues'
+import { AMBIENT_AUDIO_ATTRIBUTION_URL, AmbientSoundscape } from './audio/ambience'
 import { loadGhost } from './game/ghost'
 import {
   createCoursePath,
@@ -131,6 +132,12 @@ if (!navigator.bluetooth) {
     '로잉머신 전원을 켜고 다른 앱과의 블루투스 연결을 먼저 해제하세요. ' +
     '목록에 로잉머신이 없으면 <b>주변 Bluetooth 기기 전체 보기</b>를 눌러보세요.'
 }
+const audioCredits = document.createElement('a')
+audioCredits.href = AMBIENT_AUDIO_ATTRIBUTION_URL
+audioCredits.target = '_blank'
+audioCredits.rel = 'noopener'
+audioCredits.textContent = '주변음 출처 및 라이선스'
+note.append(document.createElement('br'), audioCredits)
 
 async function connectBle(scanMode: BleScanMode) {
   const err = $('connect-err')
@@ -312,6 +319,7 @@ let unsub: (() => void) | null = null
 const feedbackModal = new FeedbackModal()
 const metronome = new RowingMetronome()
 const cues = new AudioCues(metronome)
+const ambience = new AmbientSoundscape(metronome)
 let racePath: CoursePath = createCoursePath(selectedCourse.id)
 let raceTotal = 1
 let lastMiniMapAt = -1
@@ -320,7 +328,7 @@ function syncSoundButton() {
   const button = $<HTMLButtonElement>('btn-sound')
   button.textContent = metronome.isMuted ? '×♪' : '♪'
   button.setAttribute('aria-pressed', String(metronome.isMuted))
-  button.title = metronome.isMuted ? '로잉 리듬 소리 켜기' : '로잉 리듬 소리 끄기'
+  button.title = metronome.isMuted ? '모든 운동 소리 켜기' : '모든 운동 소리 끄기'
   button.setAttribute('aria-label', button.title)
 }
 syncSoundButton()
@@ -360,6 +368,8 @@ async function startRace() {
   metronome.stop()
   const ghost = loadGhost(selectedCourse.id)
   session = new Session(selectedCourse, selectedTier.split, ghost)
+  ambience.reset(`${session.weatherSeed}:ambience`)
+  void ambience.prepare()
   unsub?.()
   unsub = source.onSample(s => session?.onSample(s))
 
@@ -401,6 +411,7 @@ async function startRace() {
 
 $('btn-quit').addEventListener('click', () => {
   metronome.stop()
+  ambience.stop()
   session?.finish()
   showSummary()
 })
@@ -432,13 +443,20 @@ function frame(now: number) {
 
   if (session && view && $('screen-race').classList.contains('active')) {
     session.update(dt)
-    metronome.update(
+    const strokeCue = metronome.update(
       session.stroke.phase,
       session.stroke.spm,
       session.stroke.driveFraction,
       session.phase === 'running',
     )
     view.render(session, now / 1000, dt)
+    const metrics = session.metrics()
+    ambience.update({
+      elapsedSec: metrics.elapsed,
+      active: session.phase === 'running' && !metrics.stalled,
+      strokeCue,
+      presence: view.getAmbientPresence(),
+    })
     updateHud()
     checkFeedback()
     if (session.phase === 'finished') {
@@ -668,6 +686,7 @@ function updateHud() {
 function showSummary() {
   if (!session) return
   metronome.stop()
+  ambience.stop()
   const m = session.metrics()
   const s = session
   session = null
@@ -760,8 +779,10 @@ document.addEventListener('visibilitychange', () => {
     requestWakeLock()
     void metronome.unlock()
     cues.primeSpeech()
+    void ambience.prepare()
   } else if (document.visibilityState !== 'visible') {
     metronome.stop()
+    ambience.stop()
   }
 })
 

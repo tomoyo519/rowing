@@ -25,12 +25,13 @@ export interface LocalPathPoint extends PathPoint {
   yaw: number
 }
 
-/** 플레이어와 페이스메이커를 수로 중심에 대칭으로 둔다. */
+/** 플레이어는 오른쪽 레인, 페이스메이커는 노 끝이 닿지 않는 왼쪽 레인에 둔다. */
 export const PLAYER_LANE_OFFSET = 3.2
-export const PACE_LANE_OFFSET = -3.2
+// 정교해진 3m 폭의 노 끝까지 포함해도 서로 닿지 않도록 페이스 레인을 더 벌린다.
+export const PACE_LANE_OFFSET = -4.0
 /**
  * 고스트 레인. 플레이어를 가운데 두고 페이스 보트 반대편에 세운다.
- * 페이스 보트(-6.4)만큼 벌리면 세 척이 화면 폭을 넘어가서 조금 좁혔다.
+ * 페이스 보트(-7.2)만큼 벌리면 세 척이 화면 폭을 넘어가서 조금 좁혔다.
  */
 export const GHOST_LANE_OFFSET = 8.6
 

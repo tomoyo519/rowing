@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { World } from './world'
+import { World, type AmbientPresence } from './world'
 import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST } from './rig'
 import { projectedDistance } from '../game/courses'
 import { splitToSpeed } from '../game/physics'
@@ -15,17 +15,50 @@ import {
 import type { Session } from '../game/state'
 
 /** 페이스 보트가 나란히 달리는 옆 레인 간격 (m) */
-export const PACE_LANE_Z = -6.4
+export const PACE_LANE_Z = PACE_LANE_OFFSET - PLAYER_LANE_OFFSET
+
+const TURN_LOOK_AHEAD_M = 42
+const FULL_TURN_YAW = THREE.MathUtils.degToRad(8)
+const PLAYER_YAW_MAX = THREE.MathUtils.degToRad(2.2)
+const PLAYER_LEAN_MAX = THREE.MathUtils.degToRad(1.7)
+const CAMERA_BANK_MAX = THREE.MathUtils.degToRad(3.5)
+const CAMERA_OUTSIDE_MAX = 0.9
+const CAMERA_LOOK_INSIDE_MAX = 1.5
+
+export interface TurnEffects {
+  playerYaw: number
+  playerLean: number
+  cameraBank: number
+  cameraLateral: number
+  cameraLookZ: number
+}
+
+/** 42m 앞의 진행 방향을 기준으로 -1..1 범위의 커브 강도를 만든다. */
+export function turnStrengthAt(path: CoursePath, distance: number) {
+  const ahead = localPathPoint(
+    path, distance, TURN_LOOK_AHEAD_M, PLAYER_LANE_OFFSET, PLAYER_LANE_OFFSET,
+  )
+  return THREE.MathUtils.clamp(ahead.yaw / FULL_TURN_YAW, -1, 1)
+}
+
+/** 커브 강도를 보트의 선회/기울기와 카메라 움직임으로 변환한다. */
+export function turnEffects(strength: number): TurnEffects {
+  const t = THREE.MathUtils.clamp(strength, -1, 1)
+  return {
+    playerYaw: -t * PLAYER_YAW_MAX,
+    playerLean: t * PLAYER_LEAN_MAX,
+    cameraBank: -t * CAMERA_BANK_MAX,
+    cameraLateral: -t * CAMERA_OUTSIDE_MAX,
+    cameraLookZ: t * CAMERA_LOOK_INSIDE_MAX,
+  }
+}
 
 export function paceStrokeRate(intensity: number) {
   return Math.max(18, Math.min(36, 24 + (intensity - 1) * 45))
 }
 
 /**
- * 카메라 프리셋.
- *
- * 정측면은 스트로크 동작이 잘 보이지만 진행감이 죽고,
- * 스턴 뒤 추격은 그 반대다. 기본값은 둘을 절충한 쿼터뷰.
+ * 카메라 프리셋. 기본값은 첨부 레퍼런스처럼 선미 뒤 중앙에서 따라가는 시점이다.
  */
 export interface CamPreset {
   name: string
@@ -37,13 +70,13 @@ export interface CamPreset {
 }
 
 export const CAMERAS: CamPreset[] = [
+  { name: '추격', pos: [-11.5, 2.65, 0], look: [2.0, 0.62, 0], fov: 44, fovPortrait: 66 },
+  { name: '쿼터', pos: [-9.0, 3.2, 6.5], look: [2.0, 0.55, 0], fov: 48, fovPortrait: 68 },
   // 정면: 뱃머리 쪽에서 뒤를 돌아본다 — 로어의 뒤통수가 보인다.
   // 로어는 진행 반대편을 보고 앉으므로, 뒤통수를 보려면 카메라가 앞에 있어야 하고
   // 그 대가로 보이는 풍경은 '앞으로 올 코스'가 아니라 '지나온 코스'가 된다.
   // 퍼들과 강둑이 뒤로 멀어지면서 속도감을 만든다.
   { name: '정면', pos: [12.4, 2.8, 0], look: [-1.0, 0.8, 0], fov: 42, fovPortrait: 72 },
-  { name: '쿼터', pos: [-9.0, 3.2, 6.5], look: [2.0, 0.55, 0], fov: 48, fovPortrait: 68 },
-  { name: '추격', pos: [-10.5, 3.4, 2.4], look: [2.6, 0.55, 0], fov: 46, fovPortrait: 66 },
   { name: '사이드', pos: [-4.4, 4.8, 11.0], look: [0, 0.62, 0], fov: 50, fovPortrait: 70 },
 ]
 
@@ -60,6 +93,7 @@ export class View {
   private paceStroke = new StrokeEngine()
   private camShake = 0
   private frameZ = 0
+  private turnStrength = 0
   private camIndex = 0
   private path: CoursePath
 
@@ -118,6 +152,12 @@ export class View {
     const pose = session.stroke.pose()
 
     this.player.apply(pose, dt, session.boat.speed)
+    const turnTarget = turnStrengthAt(this.path, m.distance)
+    this.turnStrength = THREE.MathUtils.damp(
+      this.turnStrength, turnTarget, 4, Math.min(dt, 0.1),
+    )
+    const turn = turnEffects(this.turnStrength)
+    this.player.setCourseAttitude(turn.playerYaw, turn.playerLean)
 
     // 페이스 보트는 플레이어와 다른 위상으로 젓는다 — 실루엣이 한 몸처럼 겹치지 않는다
     this.paceStroke.onSample(paceStrokeRate(m.intensity), undefined, timeSec * 1000)
@@ -187,11 +227,15 @@ export class View {
     this.camera.position.set(
       cam.pos[0] + speedK * 0.5 * away + this.camShake * 0.10 * -away,
       cam.pos[1] + this.camShake * 0.04,
-      cam.pos[2] + this.frameZ + speedK * 0.25 * Math.sign(cam.pos[2] || 1),
+      cam.pos[2] + this.frameZ + speedK * 0.25 * Math.sign(cam.pos[2] || 1)
+        + turn.cameraLateral,
     )
     this.camera.lookAt(
-      cam.look[0], cam.look[1] + this.camShake * 0.025, cam.look[2] + this.frameZ,
+      cam.look[0], cam.look[1] + this.camShake * 0.025,
+      cam.look[2] + this.frameZ + turn.cameraLookZ,
     )
+    // lookAt 이후 카메라 로컬 전방축을 기준으로 뱅킹해야 곡선에서 화면이 기운다.
+    this.camera.rotateZ(turn.cameraBank)
 
     this.renderer.render(this.world.scene, this.camera)
   }
@@ -207,6 +251,10 @@ export class View {
 
   nearestLandmark(session: Session) {
     return this.world.nearestLandmark(session.boat.distance, this.total)
+  }
+
+  getAmbientPresence(): Readonly<AmbientPresence> {
+    return this.world.getAmbientPresence()
   }
 
   dispose() {

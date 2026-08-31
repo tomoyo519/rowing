@@ -1,9 +1,10 @@
 import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { COURSES } from '../game/courses'
+import { createCoursePath, type CoursePath } from '../game/coursePath'
 import { StrokeEngine } from '../game/stroke'
-import { COLORS_PACE, COLORS_PLAYER, Rig } from './rig'
-import { PACE_LANE_Z, paceStrokeRate } from './view'
+import { COLORS_GHOST, COLORS_PACE, COLORS_PLAYER, Rig } from './rig'
+import { CAMERAS, PACE_LANE_Z, paceStrokeRate, turnEffects, turnStrengthAt } from './view'
 import { World } from './world'
 
 describe('페이스메이커 레이스 배치', () => {
@@ -36,11 +37,12 @@ describe('페이스메이커 레이스 배치', () => {
     expect(paceStrokeRate(1.4)).toBe(36)
   })
 
-  it('두 보트와 날씨를 합쳐도 iPad용 drawable 예산을 넘지 않는다', () => {
+  it('고스트까지 세 보트와 날씨를 합쳐도 iPad용 drawable 예산을 넘지 않는다', () => {
     const world = new World(COURSES[0]!)
     const player = new Rig(COLORS_PLAYER)
     const pace = new Rig(COLORS_PACE, 0.82)
-    world.scene.add(player.group, pace.group)
+    const ghost = new Rig(COLORS_GHOST, 0.72)
+    world.scene.add(player.group, pace.group, ghost.group)
 
     const drawables: THREE.Object3D[] = []
     world.scene.traverse(node => {
@@ -52,5 +54,39 @@ describe('페이스메이커 레이스 배치', () => {
     })
     expect(drawables.length).toBeLessThan(290)
     world.dispose()
+  })
+})
+
+describe('커브 체감', () => {
+  it('앞쪽 굽이를 양방향 -1..1 강도로 안정적으로 읽는다', () => {
+    const path = createCoursePath('curve-feel-test')
+    const strengths = Array.from({ length: 101 }, (_, i) => turnStrengthAt(path, i * 12))
+    expect(strengths.every(Number.isFinite)).toBe(true)
+    expect(strengths.every(value => Math.abs(value) <= 1)).toBe(true)
+    expect(strengths.some(value => value > 0.15)).toBe(true)
+    expect(strengths.some(value => value < -0.15)).toBe(true)
+  })
+
+  it('좌우 커브 효과가 같은 크기와 반대 방향이다', () => {
+    const left = turnEffects(0.72)
+    const right = turnEffects(-0.72)
+    for (const key of Object.keys(left) as (keyof typeof left)[]) {
+      expect(left[key]).toBeCloseTo(-right[key], 10)
+    }
+    expect(Math.abs(turnEffects(99).cameraBank)).toBeLessThanOrEqual(Math.PI / 45)
+  })
+
+  it('직선 코스에서는 보트와 카메라를 기울이지 않는다', () => {
+    const straight: CoursePath = {
+      primaryAmplitude: 0, primaryWavelength: 500, primaryPhase: 0,
+      secondaryAmplitude: 0, secondaryWavelength: 300, secondaryPhase: 0,
+    }
+    expect(turnStrengthAt(straight, 800)).toBeCloseTo(0, 12)
+    expect(Object.values(turnEffects(0)).every(value => value === 0)).toBe(true)
+  })
+
+  it('기본 카메라는 첨부 레퍼런스와 같은 중앙 추격 시점이다', () => {
+    expect(CAMERAS[0]!.name).toBe('추격')
+    expect(CAMERAS[0]!.pos[2]).toBe(0)
   })
 })

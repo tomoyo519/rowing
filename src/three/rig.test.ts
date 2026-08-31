@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { Rig, COLORS_PLAYER, DIMS } from './rig'
+import {
+  Rig, COLORS_PLAYER, DIMS, RACING_HULL_LENGTH, createRacingHullGeometry,
+} from './rig'
 import { StrokeEngine } from '../game/stroke'
 
 /** 사이클 전체에 걸쳐 자세를 뽑는다 */
@@ -140,5 +142,33 @@ describe('Rig 관절 계산', () => {
       expect(sh.distanceTo(el)).toBeCloseTo(0.30, 4)
       expect(el.distanceTo(ha)).toBeCloseTo(0.30, 4)
     }
+  })
+})
+
+describe('정교한 레이싱 셸 모델', () => {
+  it('선체 중앙은 넓고 뱃머리와 선미는 뾰족하다', () => {
+    const geometry = createRacingHullGeometry()
+    const position = geometry.getAttribute('position')
+    let middle = 0
+    let ends = 0
+    for (let i = 0; i < position.count; i++) {
+      const x = position.getX(i)
+      const z = Math.abs(position.getZ(i))
+      if (Math.abs(x) < 0.05) middle = Math.max(middle, z)
+      if (Math.abs(x) > RACING_HULL_LENGTH / 2 - 0.05) ends = Math.max(ends, z)
+    }
+    expect(middle).toBeGreaterThan(ends * 8)
+    expect(ends).toBeLessThan(0.025)
+    geometry.dispose()
+  })
+
+  it('커브 기울기는 보트에만 적용되고 물결 루트는 수평이다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    rig.setCourseAttitude(0.12, -0.07)
+    const [visualRoot, puddleRoot] = rig.group.children
+    expect(visualRoot!.rotation.y).toBeCloseTo(0.12)
+    expect(visualRoot!.rotation.x).toBeCloseTo(-0.07)
+    expect(puddleRoot!.rotation.x).toBe(0)
+    expect(puddleRoot!.rotation.y).toBe(0)
   })
 })

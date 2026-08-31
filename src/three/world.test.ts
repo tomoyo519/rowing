@@ -68,4 +68,17 @@ describe('강변 배경 배치', () => {
     )).length).toBeLessThan(240)
     world.dispose()
   })
+
+  it('가장 가까운 오리와 관중의 거리·좌우 위치를 오디오에 제공한다', () => {
+    const world = new World(COURSES[0]!)
+    world.update(35, 35, 280, 3_000, 0)
+    const nearby = world.getAmbientPresence()
+    for (const source of [nearby.duck, nearby.spectator]) {
+      expect(Number.isFinite(source.distance)).toBe(true)
+      expect(source.distance).toBeGreaterThanOrEqual(0)
+      expect(source.pan).toBeGreaterThanOrEqual(-1)
+      expect(source.pan).toBeLessThanOrEqual(1)
+    }
+    world.dispose()
+  })
 })

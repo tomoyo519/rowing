@@ -9,6 +9,7 @@ import {
 } from './weather'
 import {
   createCoursePath,
+  localPathPoint,
   offsetPathPoint,
   PLAYER_LANE_OFFSET,
   type CoursePath,
@@ -66,6 +67,11 @@ interface LandmarkNode {
   lm: Landmark
   lateral: number
   baseYaw: number
+}
+
+export interface AmbientPresence {
+  duck: { distance: number; pan: number }
+  spectator: { distance: number; pan: number }
 }
 
 /** 반복 배경 오브젝트를 [minX, minX + span) 안으로 감싼다. */
@@ -373,6 +379,10 @@ export class World {
   private path: CoursePath
   private courseRoot = new THREE.Group()
   private treeNodes: LoopObject[] = []
+  private readonly nearby: AmbientPresence = {
+    duck: { distance: Number.POSITIVE_INFINITY, pan: 0 },
+    spectator: { distance: Number.POSITIVE_INFINITY, pan: 0 },
+  }
 
   constructor(course: Course, weatherSeed = `${course.id}:weather`) {
     this.course = course
@@ -715,6 +725,10 @@ export class World {
     this.applyWeather(weather)
     this.water.update(animationTimeSec, distance)
     this.sky.position.x = cameraX
+    this.nearby.duck.distance = Number.POSITIVE_INFINITY
+    this.nearby.duck.pan = 0
+    this.nearby.spectator.distance = Number.POSITIVE_INFINITY
+    this.nearby.spectator.pan = 0
 
     // 나무: 일정 간격으로 반복시키고 뒤로 흘린다
     for (let i = 0; i < this.treeNodes.length; i++) {
@@ -729,6 +743,14 @@ export class World {
     // 응원객은 강둑을 따라 반복되고, 팔을 든 채 가볍게 점프한다
     for (const node of this.spectators) {
       const along = wrappedLoopX(node.baseX, distance, node.span, -68)
+      const relative = localPathPoint(
+        this.path, distance, along, node.baseZ, PLAYER_LANE_OFFSET,
+      )
+      const proximity = Math.hypot(relative.x, relative.z)
+      if (proximity < this.nearby.spectator.distance) {
+        this.nearby.spectator.distance = proximity
+        this.nearby.spectator.pan = THREE.MathUtils.clamp(relative.z / 18, -1, 1)
+      }
       this.placeOnPath(node.obj, distance + along, node.baseZ, node.baseYaw)
       node.obj.position.y = node.baseY
         + Math.max(0, Math.sin(animationTimeSec * 3.2 + node.phase)) * 0.055
@@ -742,6 +764,14 @@ export class World {
         node.baseX, distance - animationTimeSec * 0.32, node.span, -72,
       )
       const lateral = node.baseZ + Math.sin(animationTimeSec * 0.55 + node.phase) * 0.24
+      const relative = localPathPoint(
+        this.path, distance, along, lateral, PLAYER_LANE_OFFSET,
+      )
+      const proximity = Math.hypot(relative.x, relative.z)
+      if (proximity < this.nearby.duck.distance) {
+        this.nearby.duck.distance = proximity
+        this.nearby.duck.pan = THREE.MathUtils.clamp(relative.z / 14, -1, 1)
+      }
       this.placeOnPath(node.obj, distance + along, lateral, node.baseYaw)
       node.obj.position.y = node.baseY + Math.sin(animationTimeSec * 2.1 + node.phase) * 0.035
       node.obj.rotation.z = Math.sin(animationTimeSec * 1.35 + node.phase) * 0.035
@@ -778,6 +808,11 @@ export class World {
     }
 
     this.alignCourseRoot(distance)
+  }
+
+  /** 오디오가 매 프레임 할당 없이 읽는 가장 가까운 오리/응원객 거리와 좌우 위치. */
+  getAmbientPresence(): Readonly<AmbientPresence> {
+    return this.nearby
   }
 
   /** 화면에 보이는 랜드마크 중 가장 가까운 것 (이름표 표시용) */

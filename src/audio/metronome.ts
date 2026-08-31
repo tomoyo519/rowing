@@ -113,6 +113,7 @@ export class RowingMetronome {
   update(phase: number, spm: number, driveFraction: number, active: boolean) {
     const cue = this.detector.update(phase, spm, driveFraction, active)
     if (cue && !this.muted) this.click(cue)
+    return cue
   }
 
   setMuted(muted: boolean) {
