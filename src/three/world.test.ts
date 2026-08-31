@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { COURSES } from '../game/courses'
+import { GHOST_LANE_OFFSET } from '../game/coursePath'
+import { DIMS } from './rig'
 import { createSceneryLayout, World, wrappedLoopX } from './world'
 
 describe('강변 배경 배치', () => {
@@ -14,8 +16,9 @@ describe('강변 배경 배치', () => {
     const layout = createSceneryLayout('henley-steady-30')
     expect(layout.spectators.length).toBeGreaterThanOrEqual(6)
     expect(layout.ducks.length).toBeGreaterThanOrEqual(4)
-    expect(layout.clouds.length).toBeGreaterThanOrEqual(4)
+    expect(layout.clouds.length).toBeGreaterThanOrEqual(7)
     expect(layout.props.some(p => p.kind === 'cottage')).toBe(true)
+    expect(layout.props.some(p => p.kind === 'manor')).toBe(true)
     expect(layout.props.some(p => p.kind !== 'cottage')).toBe(true)
   })
 
@@ -30,6 +33,9 @@ describe('강변 배경 배치', () => {
       expect(Math.abs(item.z)).toBeLessThanOrEqual(12.6)
     }
     for (const item of layout.clouds) expect(Math.abs(item.z)).toBeLessThanOrEqual(45)
+    const manor = layout.props.find(item => item.kind === 'manor')!
+    expect(Math.abs(manor.z)).toBeGreaterThanOrEqual(23)
+    expect(manor.scale).toBeGreaterThanOrEqual(0.94)
     for (const item of [...layout.spectators, ...layout.ducks, ...layout.clouds, ...layout.props]) {
       expect(Number.isFinite(item.baseX)).toBe(true)
       expect(Number.isFinite(item.z)).toBe(true)
@@ -79,6 +85,56 @@ describe('강변 배경 배치', () => {
       expect(source.pan).toBeGreaterThanOrEqual(-1)
       expect(source.pan).toBeLessThanOrEqual(1)
     }
+    world.dispose()
+  })
+
+  it('구름은 7개의 단일 인스턴스 군집으로 만들고 큰 저택을 포함한다', () => {
+    const world = new World(COURSES[0]!)
+    const clouds: THREE.Object3D[] = []
+    world.scene.traverse(node => { if (node.name === 'scenery:cloud') clouds.push(node) })
+    expect(clouds).toHaveLength(7)
+    expect(clouds.every(node => node instanceof THREE.InstancedMesh)).toBe(true)
+
+    const manor = world.scene.getObjectByName('scenery:manor')
+    expect(manor).toBeDefined()
+    const size = new THREE.Box3().setFromObject(manor!).getSize(new THREE.Vector3())
+    expect(Math.max(size.x, size.z)).toBeGreaterThan(14)
+    expect(size.y).toBeGreaterThan(7)
+    world.dispose()
+  })
+
+  it('성은 크고 다리는 강 전체를 가로지르며 둘 다 저비용 메시로 구성된다', () => {
+    const world = new World(COURSES[0]!)
+    const castle = world.scene.getObjectByName('landmark:castle')!
+    const bridge = world.scene.getObjectByName('landmark:bridge')!
+    const castleSize = new THREE.Box3().setFromObject(castle).getSize(new THREE.Vector3())
+    const bridgeSize = new THREE.Box3().setFromObject(bridge).getSize(new THREE.Vector3())
+    expect(Math.max(castleSize.x, castleSize.z)).toBeGreaterThan(35)
+    expect(castleSize.y).toBeGreaterThan(15)
+    expect(Math.max(bridgeSize.x, bridgeSize.z)).toBeGreaterThan(45)
+    expect(bridgeSize.y).toBeGreaterThan(8)
+    expect(bridge.children.filter(node => node instanceof THREE.Mesh)).toHaveLength(1)
+    expect(castle.children.filter(node => node instanceof THREE.Mesh).length).toBeLessThanOrEqual(2)
+    world.dispose()
+  })
+
+  it('성의 둔덕은 물을 침범하지 않고 다리는 고스트의 노 끝까지 통과시킨다', () => {
+    const world = new World(COURSES[0]!)
+    const castle = world.scene.getObjectByName('landmark:castle')!
+    const bridge = world.scene.getObjectByName('landmark:bridge')!
+    world.scene.updateMatrixWorld(true)
+
+    const castleBounds = new THREE.Box3().setFromObject(castle)
+    expect(castleBounds.min.z).toBeGreaterThanOrEqual(15)
+
+    const outerGhostOar = GHOST_LANE_OFFSET + 0.85 + DIMS.outboard
+    const ray = new THREE.Raycaster(
+      new THREE.Vector3(-8, 2, outerGhostOar),
+      new THREE.Vector3(1, 0, 0),
+      0,
+      16,
+    )
+    expect(ray.intersectObject(bridge, true)).toHaveLength(0)
     world.dispose()
   })
 })

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { Water } from './water'
 import {
   createWeatherAppearance,
@@ -29,13 +30,13 @@ const TREE_COUNT = 26
 const BANK_Z = 15
 const SPECTATOR_COUNT = 6
 const DUCK_COUNT = 4
-const CLOUD_COUNT = 4
-const PROP_COUNT = 5
+const CLOUD_COUNT = 7
+const PROP_COUNT = 6
 const BANK_OUTER_Z = BANK_Z + 26
 const BANK_STEP = 8
 
 type Side = 1 | -1
-export type BankPropKind = 'cottage' | 'deer' | 'sheep' | 'heron'
+export type BankPropKind = 'cottage' | 'manor' | 'deer' | 'sheep' | 'heron'
 
 export interface SceneryPlacement {
   baseX: number
@@ -172,24 +173,31 @@ export function createSceneryLayout(courseId: string): SceneryLayout {
 
   for (let i = 0; i < CLOUD_COUNT; i++) {
     clouds.push({
-      baseX: 20 + i * 76 + random() * 30,
+      baseX: 18 + i * 62 + random() * 24,
       z: (random() - 0.5) * 90,
-      scale: 2.0 + random() * 2.2,
+      scale: 1.8 + random() * 2.6,
       phase: random() * Math.PI * 2,
     })
   }
 
-  const guaranteed: BankPropKind[] = ['cottage', 'deer', 'sheep', 'heron']
+  const guaranteed: BankPropKind[] = ['cottage', 'manor', 'deer', 'sheep', 'heron']
   for (let i = 0; i < PROP_COUNT; i++) {
     const side: Side = i % 2 === 0 ? 1 : -1
     const kind = guaranteed[i] ?? guaranteed[Math.floor(random() * guaranteed.length)]!
-    const shoreOffset = kind === 'heron' ? 1.6 : 4.5 + random() * 5
+    const shoreOffset = kind === 'heron'
+      ? 1.6
+      : kind === 'manor'
+        ? 8 + random() * 4
+        : 4.5 + random() * 5
+    const scale = kind === 'manor'
+      ? 0.94 + random() * 0.24
+      : 0.82 + random() * 0.32
     props.push({
       baseX: 18 + Math.floor(i / 2) * 70 + random() * 22,
       z: side * (BANK_Z + shoreOffset),
       side,
       kind,
-      scale: 0.82 + random() * 0.32,
+      scale,
       phase: random() * Math.PI * 2,
     })
   }
@@ -261,18 +269,34 @@ function createDuck(
   return group
 }
 
-function createCloud(material: THREE.Material) {
-  const group = new THREE.Group()
+function createCloud(
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material,
+  phase: number,
+) {
   const parts: [number, number, number, number][] = [
-    [-0.55, 0, 0, 0.58], [0, 0.14, 0, 0.78], [0.62, 0, 0.04, 0.60], [0.18, -0.12, 0, 0.68],
+    [-0.92, -0.04, 0.02, 0.48], [-0.48, 0.12, -0.04, 0.66],
+    [0, 0.23, 0.02, 0.82], [0.53, 0.12, -0.02, 0.70],
+    [1.02, -0.02, 0.04, 0.48], [-0.28, -0.15, 0.05, 0.62],
+    [0.35, -0.14, 0.06, 0.66],
   ]
-  for (const [x, y, z, scale] of parts) {
-    const puff = new THREE.Mesh(new THREE.SphereGeometry(0.65, 9, 6), material)
-    puff.position.set(x, y, z)
-    puff.scale.set(scale * 1.45, scale, scale)
-    group.add(puff)
+  const cloud = new THREE.InstancedMesh(geometry, material, parts.length)
+  const mirror = Math.sin(phase) < 0 ? -1 : 1
+  const stretch = 0.92 + Math.abs(Math.cos(phase)) * 0.22
+  const matrix = new THREE.Matrix4()
+  const quaternion = new THREE.Quaternion()
+  const position = new THREE.Vector3()
+  const scaleVector = new THREE.Vector3()
+  for (let i = 0; i < parts.length; i++) {
+    const [x, y, z, scale] = parts[i]!
+    position.set(x * mirror * stretch, y, z + Math.sin(phase + i) * 0.045)
+    scaleVector.set(scale * (1.35 + stretch * 0.2), scale, scale * 0.92)
+    matrix.compose(position, quaternion, scaleVector)
+    cloud.setMatrixAt(i, matrix)
   }
-  return group
+  cloud.instanceMatrix.needsUpdate = true
+  cloud.computeBoundingSphere()
+  return cloud
 }
 
 function createCottage(
@@ -291,6 +315,61 @@ function createCottage(
   const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.25, 0.42), darkMaterial)
   chimney.position.set(0.9, 3.65, 0.35)
   group.add(body, roof, door, chimney)
+  return group
+}
+
+/** 강변에서 확실히 실루엣이 읽히는 큰 저택. 같은 재질 부품은 합쳐 draw call을 줄인다. */
+function createManor(
+  wallMaterial: THREE.Material,
+  roofMaterial: THREE.Material,
+  darkMaterial: THREE.Material,
+  glassMaterial: THREE.Material,
+) {
+  const group = new THREE.Group()
+  const wallParts: THREE.BufferGeometry[] = []
+  const addWall = (geometry: THREE.BufferGeometry, x: number, y: number, z: number) => {
+    geometry.translate(x, y, z)
+    wallParts.push(geometry)
+  }
+  addWall(new THREE.BoxGeometry(10.5, 5.4, 6.2), 0, 2.7, 0)
+  addWall(new THREE.BoxGeometry(4.0, 4.3, 5.2), -6.5, 2.15, 0.25)
+  addWall(new THREE.BoxGeometry(4.0, 4.3, 5.2), 6.5, 2.15, 0.25)
+  const walls = mergeGeometries(wallParts, false)
+  if (walls) group.add(new THREE.Mesh(walls, wallMaterial))
+  for (const part of wallParts) part.dispose()
+
+  const roofParts: THREE.BufferGeometry[] = []
+  const addRoof = (radius: number, height: number, x: number, y: number) => {
+    const geometry = new THREE.ConeGeometry(radius, height, 4)
+    geometry.rotateY(Math.PI / 4)
+    geometry.translate(x, y, 0)
+    roofParts.push(geometry)
+  }
+  addRoof(7.1, 3.0, 0, 6.75)
+  addRoof(3.8, 2.5, -6.5, 5.55)
+  addRoof(3.8, 2.5, 6.5, 5.55)
+  const roofs = mergeGeometries(roofParts, false)
+  if (roofs) group.add(new THREE.Mesh(roofs, roofMaterial))
+  for (const part of roofParts) part.dispose()
+
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1.35, 2.6, 0.14), darkMaterial)
+  door.position.set(0, 1.3, -3.17)
+  group.add(door)
+
+  const windowGeometry = new THREE.BoxGeometry(0.82, 0.95, 0.12)
+  const windows = new THREE.InstancedMesh(windowGeometry, glassMaterial, 11)
+  const matrix = new THREE.Matrix4()
+  const positions: [number, number][] = [
+    [-4.0, 1.55], [-2.2, 1.55], [2.2, 1.55], [4.0, 1.55],
+    [-4.0, 3.75], [-2.0, 3.75], [0, 3.75], [2.0, 3.75], [4.0, 3.75],
+    [-6.5, 2.25], [6.5, 2.25],
+  ]
+  positions.forEach(([x, y], index) => {
+    windows.setMatrixAt(index, matrix.makeTranslation(x, y, -3.19))
+  })
+  windows.instanceMatrix.needsUpdate = true
+  windows.computeBoundingSphere()
+  group.add(windows)
   return group
 }
 
@@ -375,6 +454,8 @@ export class World {
   private bankProps: LoopObject[] = []
   private landmarkGroup = new THREE.Group()
   private landmarkNodes: LandmarkNode[] = []
+  /** 매 프레임 회전시킬 부품 (풍차 날개 등) */
+  private spinners: THREE.Object3D[] = []
   private course: Course
   private path: CoursePath
   private courseRoot = new THREE.Group()
@@ -536,12 +617,15 @@ export class World {
     this.cloudMaterial = new THREE.MeshBasicMaterial({
       color: '#f6fbff', transparent: true, opacity: 0.48, depthWrite: false,
     })
-    const cloudSpan = CLOUD_COUNT * 86
+    const cloudPuffGeometry = new THREE.SphereGeometry(0.68, 9, 6)
+    const cloudSpan = CLOUD_COUNT * 70
     layout.clouds.forEach((item, index) => {
-      const cloud = createCloud(this.cloudMaterial)
-      const y = 22 + (index % 3) * 4 + item.scale
+      const cloud = createCloud(cloudPuffGeometry, this.cloudMaterial, item.phase)
+      const y = 20 + (index % 4) * 3.6 + item.scale
       cloud.position.set(0, y, item.z)
       cloud.scale.setScalar(item.scale)
+      cloud.rotation.y = Math.sin(item.phase) * 0.12
+      cloud.name = 'scenery:cloud'
       this.scene.add(cloud)
       this.clouds.push({
         obj: cloud, baseX: item.baseX, baseY: y, baseZ: item.z,
@@ -552,6 +636,7 @@ export class World {
     const cottageWall = standard(p.landmark)
     const cottageRoof = standard('#8f4f3f')
     const dark = standard('#3c3431')
+    const glass = standard('#31566d', 0.35)
     const deer = standard('#8b6242')
     const sheep = standard('#d8d7c8')
     const heron = standard('#9eabb4')
@@ -562,6 +647,10 @@ export class World {
       switch (item.kind) {
         case 'cottage':
           prop = createCottage(cottageWall, cottageRoof, dark)
+          prop.rotation.y = item.side > 0 ? 0 : Math.PI
+          break
+        case 'manor':
+          prop = createManor(cottageWall, cottageRoof, dark, glass)
           prop.rotation.y = item.side > 0 ? 0 : Math.PI
           break
         case 'deer':
@@ -577,6 +666,7 @@ export class World {
           prop.rotation.y = item.phase > Math.PI ? 0 : Math.PI
           break
       }
+      prop.name = `scenery:${item.kind}`
       prop.position.set(0, 0.85, item.z)
       prop.scale.setScalar(item.scale)
       this.courseRoot.add(prop)
@@ -584,7 +674,9 @@ export class World {
         obj: prop, baseX: item.baseX, baseY: 0.85, baseZ: item.z,
         baseYaw: prop.rotation.y,
         // 각 종류의 반복 주기를 다르게 두어 전체 풍경이 같은 조합으로 되풀이되지 않게 한다.
-        span: propSpan + index * 37, phase: item.phase, animated: item.kind !== 'cottage',
+        span: propSpan + index * 37,
+        phase: item.phase,
+        animated: item.kind !== 'cottage' && item.kind !== 'manor',
       })
     }
   }
@@ -622,19 +714,142 @@ export class World {
     const p = this.course.venue.palette
     const mat = new THREE.MeshStandardMaterial({ color: p.landmark, flatShading: true, roughness: 0.8 })
     const accent = new THREE.MeshStandardMaterial({ color: '#ff9f43', flatShading: true })
+    const gateMat = new THREE.MeshStandardMaterial({ color: '#3b2f26', flatShading: true, roughness: 0.9 })
+    const sailMat = new THREE.MeshStandardMaterial({ color: '#e8e2d4', flatShading: true, roughness: 0.85 })
+    const windowMat = new THREE.MeshStandardMaterial({ color: '#294c62', roughness: 0.28 })
 
     for (const lm of this.course.venue.landmarks) {
       const g = new THREE.Group()
       switch (lm.kind) {
         case 'bridge': {
-          const deck = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.9, 46), mat)
-          deck.position.y = 6.2
-          g.add(deck)
-          for (const z of [-15, 0, 15]) {
-            const pier = new THREE.Mesh(new THREE.BoxGeometry(2.6, 6.2, 3.2), mat)
-            pier.position.set(0, 3.1, z)
-            g.add(pier)
+          // 판자 위에 기둥 세 개가 아니라 진짜 아치를 뚫는다.
+          // 강을 가로지르는 방향(Z)으로 실루엣을 만들고 다리 폭(X)으로 밀어낸다.
+          const SPAN = 54, DECK_Y = 10.8, ARCH_BASE = 1.2, WIDTH = 4.0
+          const shape = new THREE.Shape()
+          shape.moveTo(-SPAN / 2, 0)
+          shape.lineTo(SPAN / 2, 0)
+          shape.lineTo(SPAN / 2, DECK_Y)
+          shape.lineTo(-SPAN / 2, DECK_Y)
+          shape.closePath()
+          // 중앙 아치는 가장 바깥 고스트 레인의 노 끝까지 통과하도록 넓고 완만하게 만든다.
+          for (const [cz, halfWidth, height] of [
+            [-19, 5.1, 5.1], [0, 12.75, 8.5], [19, 5.1, 5.1],
+          ] as const) {
+            const hole = new THREE.Path()
+            hole.moveTo(cz - halfWidth, 0)
+            hole.lineTo(cz - halfWidth, ARCH_BASE)
+            hole.absellipse(cz, ARCH_BASE, halfWidth, height, Math.PI, 0, true)
+            hole.lineTo(cz + halfWidth, 0)
+            hole.closePath()
+            shape.holes.push(hole)
           }
+          const body = new THREE.ExtrudeGeometry(shape, { depth: WIDTH, bevelEnabled: false })
+          body.rotateY(Math.PI / 2)      // 실루엣을 Z축(강을 가로지르는 방향)으로 세운다
+          body.translate(-WIDTH / 2, 0, 0)
+          const bodyPart = body.index ? body.toNonIndexed() : body
+          if (bodyPart !== body) body.dispose()
+          const bridgeParts: THREE.BufferGeometry[] = [bodyPart]
+
+          // 난간
+          for (const x of [-WIDTH / 2 + 0.25, WIDTH / 2 - 0.25]) {
+            const rail = new THREE.BoxGeometry(0.5, 1.1, SPAN).toNonIndexed()
+            rail.translate(x, DECK_Y + 0.55, 0)
+            bridgeParts.push(rail)
+          }
+          const bridge = mergeGeometries(bridgeParts, false)
+          if (bridge) g.add(new THREE.Mesh(bridge, mat))
+          for (const part of bridgeParts) part.dispose()
+          break
+        }
+
+        case 'castle': {
+          /*
+           * 성은 부품이 많다(총안만 50개 넘음). 그대로 두면 draw call 예산을 깬다.
+           * 같은 재질을 쓰는 구조물은 지오메트리를 하나로 합쳐 메시 1개로 만든다.
+           * 성문만 색이 달라 따로 둔다.
+           */
+          const parts: THREE.BufferGeometry[] = []
+          const put = (
+            geo: THREE.BufferGeometry, x: number, y: number, z: number, ry = 0,
+          ) => {
+            if (ry) geo.rotateY(ry)
+            geo.translate(x, y, z)
+            parts.push(geo)
+          }
+
+          put(new THREE.CylinderGeometry(17, 21, 3.2, 9), 0, -0.4, 0)          // 흙둔덕
+          put(new THREE.BoxGeometry(9, 15, 9), 0, 7.5, 0)                       // 본성
+
+          for (const [tx, tz] of [[-8, -8], [8, -8], [-8, 8], [8, 8]] as const) {
+            put(new THREE.CylinderGeometry(2.0, 2.3, 11, 7), tx, 5.5, tz)       // 망루
+            put(new THREE.ConeGeometry(2.8, 4.2, 7), tx, 13.1, tz)              // 첨탑
+          }
+
+          // 총안(battlement) — 이빨처럼 얹어야 저폴리에서도 성으로 읽힌다
+          const merlons = (len: number, y: number, along: 'x' | 'z', x = 0, z = 0) => {
+            const n = Math.max(2, Math.round(len / 1.9))
+            for (let i = 0; i < n; i++) {
+              const t = -len / 2 + (i + 0.5) * (len / n)
+              put(
+                new THREE.BoxGeometry(0.8, 0.9, 0.8),
+                along === 'x' ? x + t : x, y, along === 'z' ? z + t : z,
+              )
+            }
+          }
+          merlons(9, 15.4, 'x', 0, -4.2)
+          merlons(9, 15.4, 'x', 0, 4.2)
+
+          for (const [wx, wz, len, along] of [
+            [0, -8, 16, 'x'], [0, 8, 16, 'x'], [-8, 0, 16, 'z'], [8, 0, 16, 'z'],
+          ] as const) {
+            put(
+              new THREE.BoxGeometry(along === 'x' ? len : 1.6, 7, along === 'z' ? len : 1.6),
+              wx, 3.5, wz,
+            )
+            merlons(len, 7.4, along, wx, wz)
+          }
+
+          const merged = mergeGeometries(parts, false)
+          if (merged) g.add(new THREE.Mesh(merged, mat))
+          for (const part of parts) part.dispose()
+
+          const gate = new THREE.Mesh(new THREE.BoxGeometry(3.4, 4.4, 0.6), gateMat)
+          gate.position.set(0, 2.2, -8.6)
+          g.add(gate)
+
+          g.scale.setScalar(1.25)
+          // 둔덕까지 강둑 안쪽 경계(BANK_Z)를 넘지 않도록 성 전체를 후경으로 물린다.
+          g.position.z = BANK_Z + 28
+          break
+        }
+
+        case 'windmill': {
+          const tower = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 3.4, 11, 8), mat)
+          tower.position.y = 5.5
+          const cap = new THREE.Mesh(new THREE.ConeGeometry(2.9, 3.2, 8), mat)
+          cap.position.y = 12.6
+          g.add(tower, cap)
+
+          // 날개는 축을 따로 두고 매 프레임 돌린다
+          // 날개 4장은 그룹째 도니까 인스턴스로 묶어도 된다 (메시 8개 → 2개)
+          const sails = new THREE.Group()
+          sails.position.set(0, 12.0, -3.2)
+          const arm = (geo: THREE.BufferGeometry, m: THREE.Material, ox: number, oy: number, oz: number) => {
+            const im = new THREE.InstancedMesh(geo, m, 4)
+            const m4 = new THREE.Matrix4()
+            for (let i = 0; i < 4; i++) {
+              im.setMatrixAt(i, m4.makeRotationZ((i * Math.PI) / 2)
+                .multiply(new THREE.Matrix4().makeTranslation(ox, oy, oz)))
+            }
+            im.instanceMatrix.needsUpdate = true
+            return im
+          }
+          sails.add(arm(new THREE.BoxGeometry(0.4, 9.5, 0.3), mat, 0, 4.75, 0))
+          sails.add(arm(new THREE.BoxGeometry(1.9, 7.6, 0.12), sailMat, 1.0, 5.0, 0.16))
+          g.add(sails)
+          this.spinners.push(sails)
+
+          g.position.z = BANK_Z + 4
           break
         }
         case 'tower': {
@@ -647,13 +862,17 @@ export class World {
           break
         }
         case 'boathouse': {
-          const body = new THREE.Mesh(new THREE.BoxGeometry(9, 4.2, 7), mat)
-          body.position.y = 2.1
-          const roof = new THREE.Mesh(new THREE.ConeGeometry(6.6, 2.8, 4), mat)
-          roof.position.y = 5.6
+          const body = new THREE.Mesh(new THREE.BoxGeometry(13.5, 5.2, 8.5), mat)
+          body.position.y = 2.6
+          const roof = new THREE.Mesh(new THREE.ConeGeometry(8.4, 3.3, 4), mat)
+          roof.position.y = 6.75
           roof.rotation.y = Math.PI / 4
-          g.add(body, roof)
-          g.position.z = BANK_Z + 4
+          const windows = new THREE.Mesh(new THREE.BoxGeometry(10.8, 1.15, 0.16), windowMat)
+          windows.position.set(0, 3.25, -4.31)
+          const balcony = new THREE.Mesh(new THREE.BoxGeometry(11.8, 0.22, 1.15), gateMat)
+          balcony.position.set(0, 2.35, -4.72)
+          g.add(body, roof, windows, balcony)
+          g.position.z = BANK_Z + 6
           break
         }
         case 'trees': {
@@ -678,6 +897,8 @@ export class World {
           break
         }
       }
+      g.name = `landmark:${lm.kind}`
+      g.userData.landmarkName = lm.name
       const lateral = g.position.z
       this.landmarkGroup.add(g)
       this.landmarkNodes.push({
@@ -723,6 +944,10 @@ export class World {
   ) {
     const weather = this.weather.update(animationTimeSec, elapsedSec)
     this.applyWeather(weather)
+
+    // 풍차 날개는 바람 세기에 따라 빨라진다
+    const spin = animationTimeSec * (0.35 + weather.windStrength * 0.9)
+    for (const s of this.spinners) s.rotation.z = spin
     this.water.update(animationTimeSec, distance)
     this.sky.position.x = cameraX
     this.nearby.duck.distance = Number.POSITIVE_INFINITY
@@ -790,7 +1015,7 @@ export class World {
       node.obj.position.z = node.baseZ
     }
 
-    // 오두막과 동물은 고정 풀을 재활용한다 — 긴 코스에서도 오브젝트 수가 늘지 않는다
+    // 오두막·저택과 동물은 고정 풀을 재활용한다 — 긴 코스에서도 오브젝트 수가 늘지 않는다
     for (const node of this.bankProps) {
       const along = wrappedLoopX(node.baseX, distance, node.span, -82)
       this.placeOnPath(node.obj, distance + along, node.baseZ, node.baseYaw)

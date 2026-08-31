@@ -35,6 +35,21 @@ describe('코스 정의', () => {
     expect(courseById('없는코스').id).toBe(COURSES[0]!.id)
     expect(courseById(COURSES[3]!.id).id).toBe(COURSES[3]!.id)
   })
+
+  it('모든 장소에서 성과 다리를 코스 초중반에 만난다', () => {
+    const venues = [...new Set(COURSES.map(course => course.venue))]
+    for (const venue of venues) {
+      const castle = venue.landmarks.find(landmark => landmark.kind === 'castle')
+      const bridge = venue.landmarks.find(landmark => landmark.kind === 'bridge')
+      expect(castle, `${venue.location} 성`).toBeDefined()
+      expect(bridge, `${venue.location} 다리`).toBeDefined()
+      expect(castle!.at).toBeLessThanOrEqual(0.3)
+      expect(bridge!.at).toBeLessThanOrEqual(0.4)
+      expect(venue.landmarks.map(landmark => landmark.at)).toEqual(
+        [...venue.landmarks.map(landmark => landmark.at)].sort((a, b) => a - b),
+      )
+    }
+  })
 })
 
 describe('그룹핑', () => {

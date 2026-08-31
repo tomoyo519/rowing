@@ -5,7 +5,7 @@ export interface Landmark {
   /** 코스 시작점으로부터의 거리 비율 0~1 */
   at: number
   name: string
-  kind: 'bridge' | 'tower' | 'boathouse' | 'trees' | 'buoy'
+  kind: 'bridge' | 'tower' | 'boathouse' | 'trees' | 'buoy' | 'castle' | 'windmill'
 }
 
 export interface Venue {
@@ -44,11 +44,12 @@ const HENLEY: Venue = {
   },
   landmarks: [
     { at: 0.08, name: 'Temple Island', kind: 'trees' },
-    { at: 0.25, name: 'Remenham Club', kind: 'boathouse' },
-    { at: 0.45, name: 'Barrier Buoys', kind: 'buoy' },
-    { at: 0.62, name: 'Upper Thames RC', kind: 'boathouse' },
-    { at: 0.80, name: 'Henley Bridge', kind: 'bridge' },
-    { at: 0.95, name: "St Mary's Tower", kind: 'tower' },
+    { at: 0.16, name: 'Medmenham Castle', kind: 'castle' },
+    { at: 0.30, name: 'Henley Bridge', kind: 'bridge' },
+    { at: 0.43, name: 'Remenham Club', kind: 'boathouse' },
+    { at: 0.55, name: 'Barrier Buoys', kind: 'buoy' },
+    { at: 0.68, name: 'Upper Thames RC', kind: 'boathouse' },
+    { at: 0.92, name: "St Mary's Tower", kind: 'tower' },
   ],
 }
 
@@ -59,11 +60,13 @@ const BOSBAAN: Venue = {
     waterDeep: '#132f42', land: '#22402c', landmark: '#c2d3dd',
   },
   landmarks: [
-    { at: 0.10, name: 'Start Tower', kind: 'tower' },
-    { at: 0.28, name: 'Bosbaan Forest', kind: 'trees' },
-    { at: 0.44, name: 'Grandstand', kind: 'boathouse' },
-    { at: 0.58, name: '1000m Marker', kind: 'buoy' },
-    { at: 0.72, name: 'Forest Bridge', kind: 'bridge' },
+    { at: 0.08, name: 'Start Tower', kind: 'tower' },
+    { at: 0.16, name: 'De Molen', kind: 'windmill' },
+    { at: 0.26, name: 'Muiderslot', kind: 'castle' },
+    { at: 0.36, name: 'Forest Bridge', kind: 'bridge' },
+    { at: 0.48, name: 'Bosbaan Forest', kind: 'trees' },
+    { at: 0.60, name: 'Grandstand', kind: 'boathouse' },
+    { at: 0.72, name: '1000m Marker', kind: 'buoy' },
     { at: 0.88, name: 'Boathouse Row', kind: 'boathouse' },
     { at: 0.97, name: 'Finish Tower', kind: 'tower' },
   ],
