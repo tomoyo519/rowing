@@ -123,6 +123,87 @@ export function stepAt(p: PaceProfile, t: number): StepInfo {
   }
 }
 
+/** 코스 구간 경계. 날씨처럼 "구간마다 하나"로 고정하는 요소가 쓴다. */
+export interface ProfileSection {
+  start: number
+  end: number
+  label: string
+}
+
+/**
+ * 연속형 프로파일(스테디·빌드)은 고정 길이로 자른다. 5분 체크포인트와 같은 간격이라
+ * 피드백이 뜰 때 구간도 함께 바뀐다.
+ */
+const CONTINUOUS_SECTION_SEC = 300
+
+/**
+ * 코스를 구간 목록으로 나눈다.
+ *
+ * - 인터벌은 스텝 경계가 그대로 구간 경계다. 스프린트처럼 아주 짧은 스텝은
+ *   minSec가 찰 때까지 다음 스텝과 합쳐 한 사이클을 한 구간으로 본다.
+ * - 웨이브는 반주기(올림/내림)마다 나뉜다.
+ * - 스테디·빌드는 5분 단위로 자른다.
+ *
+ * 마지막 구간은 항상 코스 끝(durationSec)에서 끝난다.
+ */
+export function profileSections(
+  p: PaceProfile, durationSec: number, minSec = 120,
+): ProfileSection[] {
+  const duration = Math.max(1, durationSec)
+  const boundaries: { at: number; label: string }[] = []
+
+  switch (p.kind) {
+    case 'intervals': {
+      const total = patternTotal(p)
+      if (total <= 0) break
+      let t = 0
+      let sectionStart = 0
+      let sectionLabel = p.pattern[0]!.label
+      let index = 0
+      while (t < duration) {
+        const step = p.pattern[index % p.pattern.length]!
+        const next = t + step.sec
+        // 구간이 minSec를 채우면 여기서 끊고, 아니면 다음 스텝과 합친다.
+        if (next - sectionStart >= minSec && next < duration) {
+          boundaries.push({ at: sectionStart, label: sectionLabel })
+          sectionStart = next
+          sectionLabel = p.pattern[(index + 1) % p.pattern.length]!.label
+        }
+        t = next
+        index++
+      }
+      boundaries.push({ at: sectionStart, label: sectionLabel })
+      break
+    }
+    case 'wave': {
+      const half = Math.max(minSec, p.periodSec / 2)
+      for (let t = 0; t < duration; t += half) {
+        boundaries.push({ at: t, label: stepAt(p, t + 1).label })
+      }
+      break
+    }
+    default:
+      for (let t = 0; t < duration; t += CONTINUOUS_SECTION_SEC) {
+        boundaries.push({ at: t, label: stepAt(p, t + 1).label })
+      }
+  }
+
+  if (boundaries.length === 0) boundaries.push({ at: 0, label: stepAt(p, 1).label })
+
+  const sections: ProfileSection[] = boundaries.map((b, i) => ({
+    start: b.at,
+    end: boundaries[i + 1]?.at ?? duration,
+    label: b.label,
+  }))
+  // 코스 끝에 남은 자투리가 minSec보다 짧으면 앞 구간에 붙인다.
+  const last = sections[sections.length - 1]!
+  if (sections.length > 1 && last.end - last.start < minSec) {
+    sections.pop()
+    sections[sections.length - 1]!.end = duration
+  }
+  return sections
+}
+
 export function patternTotal(p: Extract<PaceProfile, { kind: 'intervals' }>): number {
   return p.pattern.reduce((a, s) => a + s.sec, 0)
 }

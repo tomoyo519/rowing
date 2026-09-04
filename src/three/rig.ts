@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import type { Pose } from '../game/stroke'
 
 /**
@@ -7,8 +8,11 @@ import type { Pose } from '../game/stroke'
  * 좌표계: 보트 진행 방향 = +X (bow), 위 = +Y, 좌우 = ±Z.
  * 로어는 스턴(-X)을 보고 앉는다 — 실제 조정과 동일.
  *
- * 매 프레임 관절 **위치**를 계산한 뒤 캡슐 메시를 두 점 사이에 맞춘다.
+ * 매 프레임 관절 **위치**를 계산한 뒤 몸통·팔다리 메시를 두 점 사이에 맞춘다.
  * 회전 계층을 쌓는 것보다 IK를 얹기 쉽고, 다리·팔이 발판/손잡이에 정확히 붙는다.
+ *
+ * 사람은 회전체(Lathe)로 깎은 몸통, 위아래 굵기가 다른 팔다리, 관절 구, 손가락이
+ * 손잡이를 감싼 손, 눈·코·입·귀가 있는 얼굴로 이루어져 실루엣이 사람으로 읽힌다.
  */
 
 // ── 치수 (m) ────────────────────────────────────────────────
@@ -24,6 +28,7 @@ const UPPER_ARM = 0.30
 const FOREARM = 0.30
 const SHOULDER_HALF = 0.17
 const HIP_HALF = 0.11
+const HEAD_RADIUS = 0.105
 
 /** 노받이(oarlock) 위치 */
 const LOCK = { x: -0.30, y: 0.42, z: 0.85 }
@@ -44,8 +49,8 @@ export function racingHullHalfWidthAt(t: number) {
 
 /** 캡슐 대신 뱃머리와 선미가 뾰족한 실제 레이싱 셸 실루엣을 만든다. */
 export function createRacingHullGeometry() {
-  const sections = 17
-  const ringSegments = 10
+  const sections = 25
+  const ringSegments = 14
   const positions: number[] = []
   const indices: number[] = []
 
@@ -129,6 +134,44 @@ function createOarBladeGeometry() {
   return geometry
 }
 
+/**
+ * 어깨는 넓고 허리는 잘록한 회전체 몸통. y=0이 엉덩이, y=TORSO가 어깨 높이다.
+ * 앞뒤로 납작하고 좌우로 넓게 눌러 사람 흉곽 비율을 만든다.
+ */
+function createTorsoGeometry() {
+  const profile: [number, number][] = [
+    [0.000, 0.000], [0.112, 0.010], [0.124, 0.060], [0.110, 0.160],
+    [0.116, 0.240], [0.138, 0.330], [0.152, 0.420], [0.150, 0.500],
+    [0.104, 0.545], [0.000, TORSO],
+  ]
+  const geometry = new THREE.LatheGeometry(
+    profile.map(([r, y]) => new THREE.Vector2(r, y)), 20,
+  )
+  geometry.scale(0.80, 1, 1.30)
+  geometry.translate(0, -TORSO / 2, 0)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+/** 위아래 굵기가 다른 팔다리. 양 끝은 반구라 관절에서 매끄럽게 이어진다. */
+function createLimbGeometry(radiusTop: number, radiusBottom: number, length: number) {
+  const points: THREE.Vector2[] = []
+  const steps = 4
+  const bottomCenter = -length / 2 + radiusBottom
+  const topCenter = length / 2 - radiusTop
+  for (let k = 0; k <= steps; k++) {
+    const a = -Math.PI / 2 + (k / steps) * (Math.PI / 2)
+    points.push(new THREE.Vector2(radiusBottom * Math.cos(a), bottomCenter + radiusBottom * Math.sin(a)))
+  }
+  for (let k = 0; k <= steps; k++) {
+    const a = (k / steps) * (Math.PI / 2)
+    points.push(new THREE.Vector2(radiusTop * Math.cos(a), topCenter + radiusTop * Math.sin(a)))
+  }
+  const geometry = new THREE.LatheGeometry(points, 12)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
 export interface RigColors {
   hull: string
   trim: string
@@ -136,26 +179,30 @@ export interface RigColors {
   /** 하의. 상의와 같은 색이면 몸이 한 덩어리로 뭉쳐 보인다 */
   shorts: string
   skin: string
+  hair: string
+  /** 있으면 모자를 씌운다 (모자색). 없으면 머리카락만 */
+  cap?: string
   oar: string
   blade: string
 }
 
 export const COLORS_PLAYER: RigColors = {
-  hull: '#112b40', trim: '#dce5e8', jersey: '#edf1f2', shorts: '#17283a', skin: '#e8b48c',
-  oar: '#172737', blade: '#e8edef',
+  hull: '#112b40', trim: '#dce5e8', jersey: '#edf1f2', shorts: '#17283a', skin: '#e9b58e',
+  hair: '#2b1d14', cap: '#17324a', oar: '#172737', blade: '#e8edef',
 }
 /** 고스트(지난 내 최고 기록) — 금빛으로 구분한다. 페이스 보트의 회색과 안 헷갈린다. */
 export const COLORS_GHOST: RigColors = {
-  hull: '#8a672d', trim: '#f5e3b8', jersey: '#e0a33a', shorts: '#5a4526', skin: '#d9c39a',
-  oar: '#e8d5a8', blade: '#e0a33a',
+  hull: '#8a672d', trim: '#f5e3b8', jersey: '#e0a33a', shorts: '#5a4526', skin: '#dcc39c',
+  hair: '#b08a45', oar: '#e8d5a8', blade: '#e0a33a',
 }
 
 export const COLORS_PACE: RigColors = {
-  hull: '#35414d', trim: '#aeb8c1', jersey: '#828d9a', shorts: '#414b56', skin: '#98a2ac',
-  oar: '#6d7885', blade: '#828d9a',
+  hull: '#35414d', trim: '#aeb8c1', jersey: '#828d9a', shorts: '#414b56', skin: '#a09aa0',
+  hair: '#4a4f57', oar: '#6d7885', blade: '#828d9a',
 }
 
 const UP = new THREE.Vector3(0, 1, 0)
+const FORWARD_Z = new THREE.Vector3(0, 0, 1)
 const _a = new THREE.Vector3()
 const _b = new THREE.Vector3()
 const _c = new THREE.Vector3()
@@ -193,17 +240,24 @@ export class Rig {
   private seat!: THREE.Mesh
   private pelvis!: THREE.Mesh
   private torso!: THREE.Mesh
-  private head!: THREE.Mesh
+  private chestStripe!: THREE.Mesh
   private neck!: THREE.Mesh
-  private hair!: THREE.Mesh
-  private thigh: THREE.Mesh[] = []
-  private shin: THREE.Mesh[] = []
+  /** 두개골·얼굴·머리카락(모자)을 한 덩어리로 움직인다 */
+  private head!: THREE.Group
+  private shoulders: THREE.Mesh[] = []
   private upperArm: THREE.Mesh[] = []
+  private elbows: THREE.Mesh[] = []
   private forearm: THREE.Mesh[] = []
+  private fingers: THREE.Mesh[] = []
+  private palms: THREE.Mesh[] = []
+  private shortsLegs: THREE.Mesh[] = []
+  private thigh: THREE.Mesh[] = []
+  private knees: THREE.Mesh[] = []
+  private shin: THREE.Mesh[] = []
+  private socks: THREE.Mesh[] = []
+  private shoes: THREE.Mesh[] = []
   private oarShaft: THREE.Mesh[] = []
   private oarBlade: THREE.Mesh[] = []
-  private hands: THREE.Mesh[] = []
-  private shoes: THREE.Mesh[] = []
   private collars: THREE.Mesh[] = []
   private splash: THREE.Mesh[] = []
   private wake!: THREE.Mesh
@@ -225,14 +279,38 @@ export class Rig {
     })
   }
 
+  private physical(color: string, extra: Partial<THREE.MeshPhysicalMaterialParameters> = {}) {
+    return new THREE.MeshPhysicalMaterial({
+      color, flatShading: false, roughness: 0.6, metalness: 0.0,
+      transparent: this.opacity < 1, opacity: this.opacity,
+      ...extra,
+    })
+  }
+
+  private shadowed<T extends THREE.Object3D>(obj: T, receive = false): T {
+    obj.castShadow = true
+    obj.receiveShadow = receive
+    return obj
+  }
+
   private build(c: RigColors) {
     const g = this.visualRoot
 
+    // ── 재질 ────────────────────────────────────────────────
+    // 피부는 약간 매트하고, 유니폼은 직물의 시인(sheen)을 준다. 선체는 클리어코트로 광택.
+    const skin = this.physical(c.skin, { roughness: 0.55, sheen: 0.15, sheenColor: new THREE.Color('#ffd9c2') })
+    const jersey = this.physical(c.jersey, {
+      roughness: 0.82, sheen: 0.55, sheenRoughness: 0.75, sheenColor: new THREE.Color('#ffffff'),
+    })
+    const shorts = this.physical(c.shorts, { roughness: 0.78, sheen: 0.4 })
+    const hairMat = this.mat(c.hair, { roughness: 0.88 })
+    const hullMat = this.physical(c.hull, {
+      roughness: 0.32, metalness: 0.08, clearcoat: 1, clearcoatRoughness: 0.14,
+    })
+    const metal = this.mat('#4a545f', { metalness: 0.45, roughness: 0.38 })
+
     // ── 선체 ────────────────────────────────────────────────
-    this.hull = new THREE.Mesh(
-      createRacingHullGeometry(),
-      this.mat(c.hull, { roughness: 0.28, metalness: 0.12 }),
-    )
+    this.hull = this.shadowed(new THREE.Mesh(createRacingHullGeometry(), hullMat), true)
     this.hull.position.set(0.1, 0.02, 0)
     g.add(this.hull)
 
@@ -242,6 +320,7 @@ export class Rig {
     deckGeo.scale(1, 0.18, 1)
     const deck = new THREE.Mesh(deckGeo, this.mat(c.trim, { roughness: 0.34 }))
     deck.position.set(0.12, 0.151, 0)
+    deck.receiveShadow = true
     g.add(deck)
 
     const cockpitGeo = new THREE.CapsuleGeometry(0.14, 0.72, 3, 10)
@@ -249,12 +328,26 @@ export class Rig {
     cockpitGeo.scale(1, 0.18, 1)
     const cockpit = new THREE.Mesh(cockpitGeo, this.mat('#101820', { roughness: 0.7 }))
     cockpit.position.set(-0.08, 0.174, 0)
+    cockpit.receiveShadow = true
     g.add(cockpit)
+
+    // 시트가 구르는 슬라이드 레일 두 줄
+    for (const side of [1, -1]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.018, 0.02), metal)
+      rail.position.set(-0.04, 0.19, side * 0.11)
+      g.add(rail)
+    }
+
+    // 뱃머리 볼과 선미의 핀(스케그)
+    const bowBall = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), this.mat('#f4f7f8'))
+    bowBall.position.set(0.1 + RACING_HULL_LENGTH / 2 + 0.02, 0.055, 0)
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.13, 0.014), hullMat)
+    fin.position.set(-2.6, -0.04, 0)
+    g.add(bowBall, fin)
 
     // 발판
     const stretcher = new THREE.Mesh(
-      new THREE.BoxGeometry(0.06, 0.28, 0.42),
-      this.mat('#3d4650'),
+      new RoundedBoxGeometry(0.06, 0.28, 0.42, 2, 0.015), this.mat('#3d4650'),
     )
     stretcher.position.set(FOOT.x - 0.04, FOOT.y + 0.06, 0)
     stretcher.rotation.z = -0.35
@@ -263,71 +356,81 @@ export class Rig {
     // 삼각형 윙 리거 — 한 줄 막대보다 실제 스컬의 구조와 폭이 잘 보인다.
     for (const side of [1, -1]) {
       const lock = new THREE.Vector3(LOCK.x, LOCK.y, side * LOCK.z)
-      const riggerMaterial = this.mat('#4a545f', { metalness: 0.32, roughness: 0.42 })
       const front = cylinderBetween(
-        new THREE.Vector3(0.12, 0.22, side * 0.15), lock, 0.018, riggerMaterial,
+        new THREE.Vector3(0.12, 0.22, side * 0.15), lock, 0.018, metal,
       )
       const rear = cylinderBetween(
-        new THREE.Vector3(-0.69, 0.22, side * 0.15), lock, 0.018, riggerMaterial,
+        new THREE.Vector3(-0.69, 0.22, side * 0.15), lock, 0.018, metal,
       )
-      const oarlock = new THREE.Mesh(
-        new THREE.TorusGeometry(0.052, 0.012, 6, 10), riggerMaterial,
-      )
+      const oarlock = new THREE.Mesh(new THREE.TorusGeometry(0.052, 0.012, 6, 12), metal)
       oarlock.rotation.x = Math.PI / 2
       oarlock.position.copy(lock)
-      g.add(front, rear, oarlock)
+      g.add(this.shadowed(front), this.shadowed(rear), oarlock)
     }
 
     // ── 사람 ────────────────────────────────────────────────
-    this.seat = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.05, 0.24), this.mat('#2f3841'))
+    this.seat = new THREE.Mesh(new RoundedBoxGeometry(0.26, 0.05, 0.26, 2, 0.02), this.mat('#2f3841'))
     g.add(this.seat)
 
-    this.pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.16, 0.30), this.mat(c.shorts))
+    this.pelvis = this.shadowed(new THREE.Mesh(new RoundedBoxGeometry(0.24, 0.17, 0.30, 3, 0.05), shorts))
     g.add(this.pelvis)
 
-    // 어깨가 넓고 허리가 가는 상체라 정면/후면에서도 사람 실루엣이 선명하다.
-    this.torso = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.17, 0.115, TORSO, 10), this.mat(c.jersey),
-    )
+    this.torso = this.shadowed(new THREE.Mesh(createTorsoGeometry(), jersey))
     g.add(this.torso)
 
-    this.head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.115, 1), this.mat(c.skin))
-    this.neck = new THREE.Mesh(capsule(0.052, 0.12), this.mat(c.skin))
-    this.hair = new THREE.Mesh(
-      new THREE.SphereGeometry(0.118, 10, 7), this.mat('#171c25', { roughness: 0.8 }),
-    )
-    this.hair.scale.set(1, 0.52, 1.02)
-    g.add(this.neck, this.head, this.hair)
+    // 가슴을 가로지르는 팀 스트라이프 — 몸통이 한 색으로 뭉치지 않는다.
+    const stripeGeo = new THREE.CylinderGeometry(0.157, 0.150, 0.075, 20, 1, true)
+    stripeGeo.scale(0.80, 1, 1.30)
+    this.chestStripe = new THREE.Mesh(stripeGeo, this.mat(c.trim === c.jersey ? c.shorts : c.shorts, { roughness: 0.8 }))
+    g.add(this.chestStripe)
+
+    this.neck = new THREE.Mesh(createLimbGeometry(0.052, 0.056, 0.14), skin)
+    g.add(this.neck)
+
+    this.head = this.buildHead(c, skin, hairMat)
+    g.add(this.head)
 
     for (let i = 0; i < 2; i++) {
-      this.thigh.push(new THREE.Mesh(capsule(0.085, THIGH), this.mat(c.skin)))
-      this.shin.push(new THREE.Mesh(capsule(0.070, SHIN), this.mat(c.skin)))
-      this.upperArm.push(new THREE.Mesh(capsule(0.058, UPPER_ARM), this.mat(c.jersey)))
-      this.forearm.push(new THREE.Mesh(capsule(0.050, FOREARM), this.mat(c.skin)))
-      this.hands.push(new THREE.Mesh(new THREE.SphereGeometry(0.058, 8, 6), this.mat(c.skin)))
+      this.shoulders.push(new THREE.Mesh(new THREE.SphereGeometry(0.057, 14, 10), jersey))
+      this.upperArm.push(new THREE.Mesh(createLimbGeometry(0.052, 0.042, UPPER_ARM), skin))
+      this.elbows.push(new THREE.Mesh(new THREE.SphereGeometry(0.044, 12, 9), skin))
+      this.forearm.push(new THREE.Mesh(createLimbGeometry(0.045, 0.036, FOREARM), skin))
+      // 손가락은 손잡이를 감싸는 고리, 손바닥은 아래팔 쪽에 붙는 타원
+      const finger = new THREE.Mesh(new THREE.TorusGeometry(0.031, 0.016, 8, 14, Math.PI * 1.6), skin)
+      const palm = new THREE.Mesh(new THREE.SphereGeometry(0.036, 12, 9), skin)
+      palm.scale.set(1.0, 1.25, 1.05)
+      this.fingers.push(finger)
+      this.palms.push(palm)
+
+      this.shortsLegs.push(new THREE.Mesh(createLimbGeometry(0.094, 0.088, 0.21), shorts))
+      this.thigh.push(new THREE.Mesh(createLimbGeometry(0.084, 0.064, THIGH), skin))
+      this.knees.push(new THREE.Mesh(new THREE.SphereGeometry(0.062, 12, 9), skin))
+      this.shin.push(new THREE.Mesh(createLimbGeometry(0.062, 0.040, SHIN), skin))
+      this.socks.push(new THREE.Mesh(createLimbGeometry(0.045, 0.045, 0.09), this.mat('#f2f4f4', { roughness: 0.9 })))
       this.shoes.push(new THREE.Mesh(
-        new THREE.BoxGeometry(0.18, 0.075, 0.11), this.mat('#202a36', { roughness: 0.78 }),
+        new RoundedBoxGeometry(0.19, 0.08, 0.105, 2, 0.028), this.mat('#202a36', { roughness: 0.7 }),
       ))
-      g.add(
-        this.thigh[i]!, this.shin[i]!, this.upperArm[i]!, this.forearm[i]!,
-        this.hands[i]!, this.shoes[i]!,
-      )
+      for (const part of [
+        this.shoulders[i]!, this.upperArm[i]!, this.elbows[i]!, this.forearm[i]!,
+        finger, palm, this.shortsLegs[i]!, this.thigh[i]!, this.knees[i]!, this.shin[i]!,
+        this.socks[i]!, this.shoes[i]!,
+      ]) g.add(this.shadowed(part))
     }
 
     // ── 노 ──────────────────────────────────────────────────
     for (let i = 0; i < 2; i++) {
       const shaft = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.022, 0.030, INBOARD + OUTBOARD, 7),
+        new THREE.CylinderGeometry(0.022, 0.030, INBOARD + OUTBOARD, 9),
         this.mat(c.oar, { roughness: 0.4 }),
       )
       const blade = new THREE.Mesh(
         createOarBladeGeometry(), this.mat(c.blade, { roughness: 0.35 }),
       )
       const collar = new THREE.Mesh(
-        new THREE.SphereGeometry(0.052, 8, 6), this.mat(c.trim, { roughness: 0.45 }),
+        new THREE.SphereGeometry(0.052, 10, 8), this.mat(c.trim, { roughness: 0.45 }),
       )
-      this.oarShaft.push(shaft)
-      this.oarBlade.push(blade)
+      this.oarShaft.push(this.shadowed(shaft))
+      this.oarBlade.push(this.shadowed(blade))
       this.collars.push(collar)
 
       const sp = new THREE.Mesh(
@@ -356,6 +459,70 @@ export class Rig {
     g.add(this.wake)
   }
 
+  /** 두개골·턱·눈·눈썹·코·입·귀·머리카락(+모자). 얼굴은 -X(선미) 쪽을 본다. */
+  private buildHead(c: RigColors, skin: THREE.Material, hairMat: THREE.Material) {
+    const head = new THREE.Group()
+    const r = HEAD_RADIUS
+
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), skin)
+    skull.scale.set(1.0, 1.14, 0.86)
+    const jaw = new THREE.Mesh(new THREE.SphereGeometry(r * 0.66, 14, 12), skin)
+    jaw.scale.set(1.0, 0.82, 1.05)
+    jaw.position.set(-0.018, -r * 0.72, 0)
+    head.add(this.shadowed(skull), jaw)
+
+    const eyeWhite = this.mat('#f6f1ec', { roughness: 0.35 })
+    const iris = this.mat('#2b2018', { roughness: 0.3 })
+    const lips = this.mat('#b5695f', { roughness: 0.7 })
+    for (const side of [1, -1]) {
+      const white = new THREE.Mesh(new THREE.SphereGeometry(0.017, 10, 8), eyeWhite)
+      white.position.set(-r * 0.80, 0.018, side * 0.037)
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.0085, 8, 6), iris)
+      pupil.position.set(-r * 0.94, 0.018, side * 0.037)
+      const brow = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.007, 0.034), hairMat)
+      brow.position.set(-r * 0.86, 0.047, side * 0.037)
+      brow.rotation.x = side * 0.18
+      const ear = new THREE.Mesh(new THREE.SphereGeometry(0.019, 10, 8), skin)
+      ear.scale.set(0.55, 1.0, 0.9)
+      ear.position.set(0.012, 0.0, side * r * 0.86)
+      head.add(white, pupil, brow, ear)
+    }
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.013, 0.038, 8), skin)
+    nose.rotation.z = Math.PI / 2
+    nose.position.set(-r * 1.02, -0.006, 0)
+    const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.005, 0.034), lips)
+    mouth.position.set(-r * 0.90, -0.048, 0)
+    head.add(nose, mouth)
+
+    // 머리카락: 이마는 드러나고 뒤통수는 덮이도록 캡을 뒤로 기울인다.
+    const hair = new THREE.Mesh(
+      new THREE.SphereGeometry(r * 1.07, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat,
+    )
+    hair.scale.set(1.0, 1.12, 0.88)
+    hair.position.set(0.012, 0.024, 0)
+    hair.rotation.z = -0.34
+    head.add(this.shadowed(hair))
+
+    if (c.cap) {
+      const capMat = this.mat(c.cap, { roughness: 0.85 })
+      const crown = new THREE.Mesh(
+        new THREE.SphereGeometry(r * 1.09, 20, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), capMat,
+      )
+      crown.scale.set(1.02, 0.92, 0.9)
+      crown.position.set(0.004, 0.03, 0)
+      crown.rotation.z = -0.1
+      const visor = new THREE.Mesh(
+        new THREE.CircleGeometry(r * 0.78, 14, Math.PI / 2, Math.PI),
+        this.mat(c.cap, { roughness: 0.85, side: THREE.DoubleSide }),
+      )
+      visor.rotation.x = -Math.PI / 2
+      visor.rotation.z = 0.08
+      visor.position.set(-r * 0.86, 0.047, 0)
+      head.add(this.shadowed(crown), visor)
+    }
+    return head
+  }
+
   /**
    * 자세 적용.
    * @param pose StrokeEngine이 만든 자세
@@ -370,23 +537,22 @@ export class Rig {
     // +bodyAngle = 앞(-X)으로 숙임
     const sh = Math.sin(pose.bodyAngle), ch = Math.cos(pose.bodyAngle)
     const shoulder = new THREE.Vector3(hipX - sh * TORSO, SEAT_Y + ch * TORSO, 0)
+    const bodyAxis = new THREE.Vector3(-sh, ch, 0)
 
-    this.pelvis.position.copy(hip)
+    this.pelvis.position.copy(hip).addScaledVector(bodyAxis, 0.02)
     this.pelvis.rotation.z = pose.bodyAngle * 0.4
     place(this.torso, hip, shoulder, TORSO)
+    const stripeCenter = hip.clone().addScaledVector(bodyAxis, 0.36)
+    place(this.chestStripe, stripeCenter.clone().addScaledVector(bodyAxis, -0.0375),
+      stripeCenter.clone().addScaledVector(bodyAxis, 0.0375), 0.075)
 
-    const headPos = shoulder.clone().add(
-      new THREE.Vector3(-sh, ch, 0).multiplyScalar(0.20),
-    )
-    const bodyAxis = new THREE.Vector3(-sh, ch, 0)
-    const neckStart = shoulder.clone().addScaledVector(bodyAxis, 0.015)
-    const neckEnd = headPos.clone().addScaledVector(bodyAxis, -0.095)
-    place(this.neck, neckStart, neckEnd, 0.12)
+    const headPos = shoulder.clone().addScaledVector(bodyAxis, 0.21)
+    const neckStart = shoulder.clone().addScaledVector(bodyAxis, -0.02)
+    const neckEnd = headPos.clone().addScaledVector(bodyAxis, -0.09)
+    place(this.neck, neckStart, neckEnd, 0.14)
     this.head.position.copy(headPos)
     // 몸을 숙여도 고개는 거의 수평을 유지해 후방 카메라에서 얼굴이 잘 보이게 한다.
-    this.head.rotation.z = pose.bodyAngle * 0.2
-    this.hair.position.copy(headPos).addScaledVector(bodyAxis, 0.070)
-    this.hair.rotation.z = pose.bodyAngle * 0.2
+    this.head.rotation.z = pose.bodyAngle * 0.22
 
     this.joints.hip.copy(hip)
     this.joints.shoulder.copy(shoulder)
@@ -426,9 +592,19 @@ export class Rig {
       const pole = new THREE.Vector3(0, -1, side * 0.55).normalize()
       const elbow = solveIK(shoulderPt, handle, UPPER_ARM, FOREARM, pole)
       this.joints.elbow[i]!.copy(elbow)
+      this.shoulders[i]!.position.copy(shoulderPt).addScaledVector(bodyAxis, -0.01)
       place(this.upperArm[i]!, shoulderPt, elbow, UPPER_ARM)
+      this.elbows[i]!.position.copy(elbow)
       place(this.forearm[i]!, elbow, handle, FOREARM)
-      this.hands[i]!.position.copy(handle)
+
+      // 손가락 고리는 노 축을 감싸고, 손바닥은 아래팔 쪽에서 손잡이를 받친다.
+      const finger = this.fingers[i]!
+      finger.position.copy(handle).addScaledVector(dir, -0.02)
+      finger.quaternion.setFromUnitVectors(FORWARD_Z, dir)
+      const toElbow = _b.subVectors(elbow, handle).normalize()
+      const palm = this.palms[i]!
+      palm.position.copy(handle).addScaledVector(toElbow, 0.035)
+      palm.quaternion.setFromUnitVectors(UP, toElbow)
 
       // ── 다리 IK: 엉덩이 → 발 ────────────────────────────
       const hipPt = new THREE.Vector3(hipX, SEAT_Y, side * HIP_HALF)
@@ -436,8 +612,15 @@ export class Rig {
       const knee = solveIK(hipPt, footPt, THIGH, SHIN, UP)
       this.joints.knee[i]!.copy(knee)
       this.joints.foot[i]!.copy(footPt)
+      const thighDir = _c.subVectors(knee, hipPt).normalize()
+      place(this.shortsLegs[i]!, hipPt.clone().addScaledVector(thighDir, -0.02),
+        hipPt.clone().addScaledVector(thighDir, 0.19), 0.21)
       place(this.thigh[i]!, hipPt, knee, THIGH)
+      this.knees[i]!.position.copy(knee)
       place(this.shin[i]!, knee, footPt, SHIN)
+      const shinDir = _b.subVectors(knee, footPt).normalize()
+      place(this.socks[i]!, footPt.clone().addScaledVector(shinDir, 0.01),
+        footPt.clone().addScaledVector(shinDir, 0.10), 0.09)
       this.shoes[i]!.position.set(footPt.x - 0.035, footPt.y + 0.005, footPt.z)
       this.shoes[i]!.rotation.z = -0.35
 
@@ -536,11 +719,6 @@ export class Rig {
 
 // ── 헬퍼 ────────────────────────────────────────────────────
 
-/** Y축 방향 캡슐. place()가 두 점 사이에 맞춰준다. */
-function capsule(r: number, len: number) {
-  return new THREE.CapsuleGeometry(r, Math.max(0.01, len - r * 2), 3, 8)
-}
-
 function cylinderBetween(
   from: THREE.Vector3,
   to: THREE.Vector3,
@@ -549,7 +727,7 @@ function cylinderBetween(
 ) {
   const length = from.distanceTo(to)
   const mesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius, length, 7), material,
+    new THREE.CylinderGeometry(radius, radius, length, 8), material,
   )
   place(mesh, from, to, length)
   return mesh

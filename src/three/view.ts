@@ -53,8 +53,14 @@ export function turnEffects(strength: number): TurnEffects {
   }
 }
 
-export function paceStrokeRate(intensity: number) {
-  return Math.max(18, Math.min(36, 24 + (intensity - 1) * 45))
+/**
+ * 페이스 보트의 스트로크 레이트.
+ * 구간 강도에 따라 오르내리고, 기준 스플릿이 빠를수록 기본 레이트도 높다 —
+ * 1:45 페이스를 24spm으로 젓는 배는 없다.
+ */
+export function paceStrokeRate(intensity: number, baseSplit = 145) {
+  const base = 24 + (145 - baseSplit) * 0.2
+  return Math.max(18, Math.min(38, base + (intensity - 1) * 45))
 }
 
 /**
@@ -106,6 +112,9 @@ export class View {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.05
+    // 보트·로어·나무가 수면과 강둑에 그림자를 떨어뜨린다. 그림자 카메라는 보트 주변 ±26m만 덮는다.
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = THREE.PCFShadowMap
 
     this.camera = new THREE.PerspectiveCamera(52, 1, 0.1, 500)
 
@@ -160,7 +169,7 @@ export class View {
     this.player.setCourseAttitude(turn.playerYaw, turn.playerLean)
 
     // 페이스 보트는 플레이어와 다른 위상으로 젓는다 — 실루엣이 한 몸처럼 겹치지 않는다
-    this.paceStroke.onSample(paceStrokeRate(m.intensity), undefined, timeSec * 1000)
+    this.paceStroke.onSample(paceStrokeRate(m.intensity, session.baseSplit), undefined, timeSec * 1000)
     this.paceStroke.update(dt)
     this.pace.apply(this.paceStroke.pose(), dt, splitToSpeed(m.targetSplit))
     const pacePoint = localPathPoint(

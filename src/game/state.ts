@@ -72,8 +72,10 @@ export class Session {
     public baseSplit: number,
     /** 이 코스의 지난 최고 기록. 없으면 null. */
     public ghost: GhostTrack | null = null,
+    /** 개발용: 날씨 seed를 고정한다. 없으면 매 운동 달라진다. */
+    weatherSeed?: string,
   ) {
-    this.weatherSeed = `${course.id}:${Date.now()}:${Math.random()}`
+    this.weatherSeed = weatherSeed ?? `${course.id}:${Date.now()}:${Math.random()}`
   }
 
   start() {

@@ -6,6 +6,7 @@ export interface Landmark {
   at: number
   name: string
   kind: 'bridge' | 'tower' | 'boathouse' | 'trees' | 'buoy' | 'castle' | 'windmill'
+    | 'church' | 'townhouses' | 'footbridge' | 'suspension' | 'grandstand' | 'lighthouse'
 }
 
 export interface Venue {
@@ -43,13 +44,18 @@ const HENLEY: Venue = {
     waterDeep: '#16344a', land: '#1e3d2f', landmark: '#d9c9a3',
   },
   landmarks: [
-    { at: 0.08, name: 'Temple Island', kind: 'trees' },
-    { at: 0.16, name: 'Medmenham Castle', kind: 'castle' },
+    { at: 0.06, name: 'Temple Island', kind: 'trees' },
+    { at: 0.13, name: 'Medmenham Castle', kind: 'castle' },
+    { at: 0.21, name: 'Hambleden Footbridge', kind: 'footbridge' },
     { at: 0.30, name: 'Henley Bridge', kind: 'bridge' },
-    { at: 0.43, name: 'Remenham Club', kind: 'boathouse' },
-    { at: 0.55, name: 'Barrier Buoys', kind: 'buoy' },
-    { at: 0.68, name: 'Upper Thames RC', kind: 'boathouse' },
-    { at: 0.92, name: "St Mary's Tower", kind: 'tower' },
+    { at: 0.37, name: 'Henley Town', kind: 'townhouses' },
+    { at: 0.44, name: 'Remenham Club', kind: 'boathouse' },
+    { at: 0.52, name: "St Mary's Church", kind: 'church' },
+    { at: 0.58, name: 'Barrier Buoys', kind: 'buoy' },
+    { at: 0.66, name: 'Upper Thames RC', kind: 'boathouse' },
+    { at: 0.76, name: 'Marlow Suspension Bridge', kind: 'suspension' },
+    { at: 0.84, name: 'Riverside Manor', kind: 'townhouses' },
+    { at: 0.92, name: 'Fawley Court Tower', kind: 'tower' },
   ],
 }
 
@@ -60,14 +66,18 @@ const BOSBAAN: Venue = {
     waterDeep: '#132f42', land: '#22402c', landmark: '#c2d3dd',
   },
   landmarks: [
-    { at: 0.08, name: 'Start Tower', kind: 'tower' },
-    { at: 0.16, name: 'De Molen', kind: 'windmill' },
-    { at: 0.26, name: 'Muiderslot', kind: 'castle' },
-    { at: 0.36, name: 'Forest Bridge', kind: 'bridge' },
-    { at: 0.48, name: 'Bosbaan Forest', kind: 'trees' },
-    { at: 0.60, name: 'Grandstand', kind: 'boathouse' },
-    { at: 0.72, name: '1000m Marker', kind: 'buoy' },
-    { at: 0.88, name: 'Boathouse Row', kind: 'boathouse' },
+    { at: 0.06, name: 'Start Tower', kind: 'tower' },
+    { at: 0.14, name: 'De Molen', kind: 'windmill' },
+    { at: 0.22, name: 'Muiderslot', kind: 'castle' },
+    { at: 0.30, name: 'Amstel Footbridge', kind: 'footbridge' },
+    { at: 0.38, name: 'Forest Bridge', kind: 'bridge' },
+    { at: 0.46, name: 'Bosbaan Forest', kind: 'trees' },
+    { at: 0.54, name: 'Canal Houses', kind: 'townhouses' },
+    { at: 0.62, name: 'Grandstand', kind: 'grandstand' },
+    { at: 0.70, name: '1000m Marker', kind: 'buoy' },
+    { at: 0.78, name: 'IJ Suspension Bridge', kind: 'suspension' },
+    { at: 0.86, name: 'Harbour Lighthouse', kind: 'lighthouse' },
+    { at: 0.92, name: 'Boathouse Row', kind: 'boathouse' },
     { at: 0.97, name: 'Finish Tower', kind: 'tower' },
   ],
 }
@@ -378,9 +388,15 @@ export interface PaceTier {
   hint: string
 }
 
+/**
+ * 페이스 보트가 달리는 기준 스플릿.
+ * 페이스 보트는 "최소한 이 속도는 타야 한다"는 기준선이라, 실제 로어가 따라붙어야 할 만큼
+ * 빠르게 잡았다. 예전 값(2:45~1:58)은 조금만 저어도 페이스 보트가 뒤로 사라져 기준이 되지 못했다.
+ */
 export const PACE_TIERS: PaceTier[] = [
-  { id: 'easy',   label: '가볍게', split: 165, hint: '2:45 · 대화가 가능한 강도' },
-  { id: 'steady', label: '스테디', split: 145, hint: '2:25 · 유산소 지구력 구간' },
-  { id: 'strong', label: '강하게', split: 130, hint: '2:10 · 호흡이 가빠지는 구간' },
-  { id: 'race',   label: '레이스', split: 118, hint: '1:58 · 대회 페이스' },
+  { id: 'easy',   label: '가볍게', split: 150, hint: '2:30 · 대화가 가능한 강도' },
+  { id: 'steady', label: '스테디', split: 135, hint: '2:15 · 유산소 지구력 구간' },
+  { id: 'strong', label: '강하게', split: 125, hint: '2:05 · 호흡이 가빠지는 구간' },
+  { id: 'race',   label: '레이스', split: 115, hint: '1:55 · 대회 페이스' },
+  { id: 'max',    label: '전력',   split: 105, hint: '1:45 · 한계까지 밀어붙이는 구간' },
 ]

@@ -1,22 +1,36 @@
 import * as THREE from 'three'
 
-export const WEATHER_KINDS = ['sun', 'wind', 'rain', 'rainbow', 'snow'] as const
+/**
+ * 날씨.
+ *
+ * 코스 구간(섹션)마다 날씨 하나가 고정된다. 구간이 바뀔 때만 다음 날씨로
+ * 크로스페이드하므로 한 구간 안에서는 하늘이 흔들리지 않는다.
+ *
+ * 맑은 날이 대부분이다 — 쨍한 파란 하늘, 햇빛이 물에 반짝이는 가을 하늘, 황금빛 오후.
+ * 바람·비·눈은 가끔 끼어들고, 비 뒤에 맑아지면 무지개가 잠깐 뜬다.
+ */
+export const WEATHER_KINDS = ['clear', 'autumn', 'sun', 'wind', 'rain', 'snow'] as const
 export type WeatherKind = (typeof WEATHER_KINDS)[number]
-export type BaseWeatherKind = 'sun' | 'wind' | 'rain' | 'snow'
+/** 하늘색 팔레트를 갖는 날씨. 무지개는 팔레트가 아니라 오버레이라 여기 없다. */
+export type BaseWeatherKind = WeatherKind
+
+/** 밝은 날씨 — 무지개는 비 뒤에 이런 날씨가 올 때만 뜬다. */
+export const BRIGHT_KINDS: readonly WeatherKind[] = ['clear', 'autumn', 'sun']
+
+export interface WeatherSection {
+  start: number
+  end: number
+}
 
 export interface WeatherSegment {
   kind: WeatherKind
   start: number
   end: number
+  /** 구간 시작 직후 이전 날씨에서 넘어오는 데 걸리는 시간 */
   transitionSec: number
 }
 
-export interface WeatherWeights {
-  sun: number
-  wind: number
-  rain: number
-  snow: number
-}
+export type WeatherWeights = Record<WeatherKind, number>
 
 export interface WeatherBlend {
   cue: WeatherKind
@@ -24,7 +38,7 @@ export interface WeatherBlend {
   to: WeatherKind
   mix: number
   base: WeatherWeights
-  /** 비가 잦아들며 해가 돌아오는 동안만 켜지는 별도 오버레이. */
+  /** 비가 그치고 맑아진 직후에만 켜지는 별도 오버레이. */
   rainbow: number
   windStrength: number
   cloudiness: number
@@ -45,26 +59,31 @@ export interface WeatherAppearance {
   waterDeep: THREE.Color
   land: THREE.Color
   cloud: THREE.Color
+  sunColor: THREE.Color
   fogNear: number
   fogFar: number
   sunIntensity: number
   hemiIntensity: number
   ambientIntensity: number
   cloudOpacity: number
+  /** 물 위 햇빛 반짝임 세기 0..1 */
+  sparkle: number
+  /** 나뭇잎이 단풍으로 물드는 정도 0..1 */
+  autumn: number
+  /** 나뭇잎 밝기 배율 — 흐린 날은 잎도 어두워진다 */
+  foliageLight: number
 }
 
-const BASE_KINDS: BaseWeatherKind[] = ['sun', 'wind', 'rain', 'snow']
 const TRANSITION_SEC = 18
+const RAINBOW_SEC = 80
 const RAIN_COUNT = 160
 const SNOW_COUNT = 80
 const WIND_COUNT = 24
+const FALLBACK_SECTION_SEC = 300
 
-const DURATION_RANGE: Record<WeatherKind, readonly [number, number]> = {
-  sun: [95, 165],
-  wind: [85, 145],
-  rain: [120, 210],
-  rainbow: [55, 90],
-  snow: [120, 210],
+/** 한 구간의 날씨를 뽑는 가중치. 밝은 날이 2/3 이상이다. */
+const KIND_WEIGHTS: WeatherWeights = {
+  clear: 0.27, autumn: 0.27, sun: 0.16, wind: 0.12, rain: 0.11, snow: 0.07,
 }
 
 function hashString(value: string) {
@@ -87,74 +106,75 @@ function seededRandom(seed: string) {
   }
 }
 
+function isBright(kind: WeatherKind) {
+  return BRIGHT_KINDS.includes(kind)
+}
+
+/** 같은 날씨가 연달아 오지 않고, 비와 눈은 붙어 있지 않게 다음 날씨를 고른다. */
+function pickKind(random: () => number, previous: WeatherKind | undefined, preferBright: boolean) {
+  const weights: WeatherWeights = { ...KIND_WEIGHTS }
+  if (previous) weights[previous] = 0
+  if (previous === 'rain') weights.snow = 0
+  if (previous === 'snow') weights.rain = 0
+  if (preferBright) {
+    for (const kind of WEATHER_KINDS) if (!isBright(kind)) weights[kind] *= 0.25
+  }
+  let total = 0
+  for (const kind of WEATHER_KINDS) total += weights[kind]
+  let roll = random() * total
+  for (const kind of WEATHER_KINDS) {
+    roll -= weights[kind]
+    if (roll <= 0 && weights[kind] > 0) return kind
+  }
+  return 'clear'
+}
+
 /**
  * 한 세션 동안 사용할 날씨 타임라인.
  *
- * 매 세션의 seed가 달라 시작 날씨, 사건 종류, 길이가 모두 달라진다.
- * 비와 눈 사이에는 항상 맑은 구간이 있고 무지개는 반드시 비 직후에만 나타난다.
+ * sections를 주면 구간마다 날씨 하나가 고정된다. 없으면 5분 단위로 자른다.
+ * 마지막 구간은 세션이 끝난 뒤에도 요약 화면까지 이어지도록 90초 연장한다.
  */
-export function createWeatherSchedule(seed: string, durationSec: number): WeatherSegment[] {
+export function createWeatherSchedule(
+  seed: string,
+  durationSec: number,
+  sections?: readonly WeatherSection[],
+): WeatherSegment[] {
   const random = seededRandom(seed)
-  const schedule: WeatherSegment[] = []
-  const target = Math.max(1, durationSec) + 90
-  let cursor = 0
-
-  const add = (kind: WeatherKind) => {
-    if (schedule[schedule.length - 1]?.kind === kind) return
-    const [min, max] = DURATION_RANGE[kind]
-    const duration = min + random() * (max - min)
-    schedule.push({ kind, start: cursor, end: cursor + duration, transitionSec: TRANSITION_SEC })
-    cursor += duration
-  }
-
-  type WeatherEvent = 'wind' | 'rain' | 'snow'
-  let previousEvent: WeatherEvent | undefined
-  const chooseEvent = (): WeatherEvent => {
-    const roll = random()
-    let event: WeatherEvent = roll < 0.45 ? 'rain' : roll < 0.72 ? 'wind' : 'snow'
-    if (event === previousEvent) {
-      const alternatives: WeatherEvent[] = event === 'rain'
-        ? ['wind', 'snow']
-        : event === 'wind'
-          ? ['rain', 'snow']
-          : ['rain', 'wind']
-      event = alternatives[Math.floor(random() * alternatives.length)]!
+  const duration = Math.max(1, durationSec)
+  const spans: WeatherSection[] = sections && sections.length > 0
+    ? sections.map(section => ({ start: section.start, end: section.end }))
+    : []
+  if (spans.length === 0) {
+    for (let t = 0; t < duration; t += FALLBACK_SECTION_SEC) {
+      spans.push({ start: t, end: Math.min(duration, t + FALLBACK_SECTION_SEC) })
     }
-    previousEvent = event
-    return event
   }
 
-  // 매번 맑은 날부터 시작하지 않게 해 첫 화면부터 세션별 분위기가 달라진다.
-  const initialRoll = random()
-  if (initialRoll < 0.34) {
-    add('sun')
-  } else {
-    const initial = chooseEvent()
-    add(initial)
-    if (initial === 'rain') add('rainbow')
-    add('sun')
-  }
-
-  while (cursor < target) {
-    const event = chooseEvent()
-    add(event)
-    if (event === 'rain') add('rainbow')
-    add('sun')
-  }
-
+  const schedule: WeatherSegment[] = []
+  let previous: WeatherKind | undefined
+  spans.forEach((span, index) => {
+    // 첫 화면은 대체로 밝게 시작한다.
+    const kind = pickKind(random, previous, index === 0 && random() < 0.8)
+    const length = span.end - span.start
+    schedule.push({
+      kind,
+      start: span.start,
+      end: span.end,
+      transitionSec: index === 0 ? 0 : Math.min(TRANSITION_SEC, length * 0.3),
+    })
+    previous = kind
+  })
+  schedule[schedule.length - 1]!.end += 90
   return schedule
 }
 
 function createBlend(): WeatherBlend {
   return {
-    cue: 'sun', from: 'sun', to: 'sun', mix: 0,
-    base: { sun: 1, wind: 0, rain: 0, snow: 0 },
-    rainbow: 0, windStrength: 0.08, cloudiness: 0.22,
+    cue: 'clear', from: 'clear', to: 'clear', mix: 0,
+    base: { clear: 1, autumn: 0, sun: 0, wind: 0, rain: 0, snow: 0 },
+    rainbow: 0, windStrength: 0.06, cloudiness: 0.12,
   }
-}
-
-function baseKind(kind: WeatherKind): BaseWeatherKind {
-  return kind === 'rainbow' ? 'sun' : kind
 }
 
 function smoothstep(value: number) {
@@ -181,41 +201,41 @@ export function weatherAt(
   }
 
   const current = schedule[low]!
-  const next = schedule[low + 1]
-  const transitionStart = current.end - current.transitionSec
-  const rawMix = next && time >= transitionStart
-    ? (time - transitionStart) / current.transitionSec
-    : 0
-  const mix = next ? smoothstep(rawMix) : 0
-  const from = current.kind
-  const to = next && rawMix > 0 ? next.kind : from
+  const previous = schedule[low - 1]
+  const into = time - current.start
+  const transitioning = previous !== undefined
+    && current.transitionSec > 0
+    && into < current.transitionSec
+  const rawMix = transitioning ? into / current.transitionSec : 1
+  const mix = transitioning ? smoothstep(rawMix) : 0
+  const from = transitioning ? previous.kind : current.kind
+  const to = current.kind
 
   out.from = from
   out.to = to
   out.mix = mix
-  out.cue = mix >= 0.5 ? to : from
-  for (const kind of BASE_KINDS) out.base[kind] = 0
+  out.cue = mix >= 0.5 || !transitioning ? to : from
+  for (const kind of WEATHER_KINDS) out.base[kind] = 0
+  out.base[from] += 1 - mix
+  out.base[to] += mix
 
-  const fromBase = baseKind(from)
-  const toBase = baseKind(to)
-  out.base[fromBase] += 1 - mix
-  out.base[toBase] += mix
+  // 무지개: 비 구간이 끝나고 밝은 구간이 시작된 직후에만.
+  out.rainbow = 0
+  if (previous?.kind === 'rain' && isBright(current.kind)) {
+    const fadeIn = smoothstep(into / 16)
+    const fadeOut = 1 - smoothstep((into - (RAINBOW_SEC - 24)) / 24)
+    const beforeEnd = 1 - smoothstep((time - (current.end - 14)) / 14)
+    out.rainbow = Math.max(0, Math.min(1, fadeIn * fadeOut * beforeEnd))
+  }
 
-  const fromRainbow = from === 'rainbow' ? 1 : 0
-  const toRainbow = to === 'rainbow' ? 1 : 0
-  out.rainbow = fromRainbow * (1 - mix) + toRainbow * mix
-  out.windStrength = (
-    out.base.sun * 0.08
-    + out.base.wind
-    + out.base.rain * 0.55
-    + out.base.snow * 0.35
+  const b = out.base
+  out.windStrength = Math.min(1,
+    b.clear * 0.06 + b.autumn * 0.12 + b.sun * 0.08
+    + b.wind + b.rain * 0.55 + b.snow * 0.35,
   )
   out.cloudiness = Math.min(1,
-    out.base.sun * 0.22
-    + out.base.wind * 0.56
-    + out.base.rain
-    + out.base.snow * 0.88
-    + out.rainbow * 0.18,
+    b.clear * 0.12 + b.autumn * 0.10 + b.sun * 0.22
+    + b.wind * 0.56 + b.rain + b.snow * 0.88 + out.rainbow * 0.18,
   )
   return out
 }
@@ -228,18 +248,23 @@ interface WeatherStyle {
   waterDeep: THREE.Color
   land: THREE.Color
   cloud: THREE.Color
+  sunColor: THREE.Color
   fogNear: number
   fogFar: number
   sunIntensity: number
   hemiIntensity: number
   ambientIntensity: number
   cloudOpacity: number
+  sparkle: number
+  autumn: number
+  foliageLight: number
 }
 
 const style = (
   blend: number,
-  colors: readonly [string, string, string, string, string, string],
+  colors: readonly [string, string, string, string, string, string, string],
   values: readonly [number, number, number, number, number, number],
+  extra: readonly [number, number, number],
 ): WeatherStyle => ({
   blend,
   skyTop: new THREE.Color(colors[0]),
@@ -248,57 +273,85 @@ const style = (
   waterDeep: new THREE.Color(colors[3]),
   land: new THREE.Color(colors[4]),
   cloud: new THREE.Color(colors[5]),
+  sunColor: new THREE.Color(colors[6]),
   fogNear: values[0], fogFar: values[1], sunIntensity: values[2],
   hemiIntensity: values[3], ambientIntensity: values[4], cloudOpacity: values[5],
+  sparkle: extra[0], autumn: extra[1], foliageLight: extra[2],
 })
 
+/**
+ * 날씨별 팔레트. blend가 클수록 코스 고유 팔레트보다 날씨색이 강하게 나온다.
+ * 밝은 날씨는 blend를 높여 어두운 코스 팔레트에 눌리지 않게 했다.
+ */
 const STYLES: Record<BaseWeatherKind, WeatherStyle> = {
+  // 쨍한 한낮 — 진한 파랑에서 하얗게 풀리는 하늘
+  clear: style(
+    0.9,
+    ['#3a8fe2', '#dcefff', '#2f7fb2', '#17496b', '#3f7d3c', '#ffffff', '#fff6e4'],
+    [64, 380, 2.2, 1.02, 0.34, 0.85],
+    [0.9, 0, 1.06],
+  ),
+  // 가을 하늘 — 높고 맑은 파랑, 지평선은 따뜻한 크림색, 단풍 든 나무와 반짝이는 물
+  autumn: style(
+    0.88,
+    ['#4692dc', '#f4e0bb', '#3b7a9a', '#1c4862', '#7f8a3c', '#fff8ee', '#ffd9a4'],
+    [58, 350, 2.05, 0.94, 0.32, 0.7],
+    [1.0, 1, 1.0],
+  ),
+  // 황금빛 오후
   sun: style(
-    0.36,
-    ['#4387c5', '#f3c47e', '#397ba1', '#173e55', '#315e38', '#ffffff'],
-    [48, 280, 1.68, 0.93, 0.28, 0.28],
+    0.72,
+    ['#5a9bd6', '#f8d194', '#3d7fa6', '#1a4359', '#3f6d3b', '#fff1dc', '#ffcb8e'],
+    [52, 300, 1.85, 0.9, 0.3, 0.8],
+    [0.8, 0.12, 0.98],
   ),
   wind: style(
-    0.30,
-    ['#57788f', '#b7c5cb', '#35657f', '#183748', '#31543b', '#c2ccd1'],
-    [38, 225, 1.18, 0.82, 0.24, 0.50],
+    0.5,
+    ['#6a93b4', '#d3dee6', '#3c6f8c', '#1c3e52', '#3e6a44', '#e0e7ec', '#f2f5f7'],
+    [42, 240, 1.35, 0.86, 0.28, 0.85],
+    [0.3, 0, 0.9],
   ),
   rain: style(
-    0.58,
-    ['#344958', '#71828c', '#284f65', '#132c3a', '#273d34', '#7f8d98'],
-    [26, 150, 0.62, 0.70, 0.20, 0.72],
+    0.62,
+    ['#4a5f70', '#8b9aa5', '#2f5871', '#14303f', '#2f4a3c', '#8f9ca6', '#dfe6ec'],
+    [28, 160, 0.7, 0.72, 0.22, 0.9],
+    [0, 0, 0.72],
   ),
   snow: style(
-    0.56,
-    ['#9eafbd', '#d7dfe4', '#53778b', '#294757', '#a9b5aa', '#d6e0e6'],
-    [30, 180, 0.86, 0.78, 0.24, 0.60],
+    0.58,
+    ['#9eafbd', '#d7dfe4', '#53778b', '#294757', '#a9b5aa', '#d6e0e6', '#eef3f8'],
+    [30, 180, 0.9, 0.8, 0.24, 0.85],
+    [0.12, 0, 0.86],
   ),
 }
 
 const RAINBOW_SKY = new THREE.Color('#86b8d7')
 const RAINBOW_WATER = new THREE.Color('#3f7896')
 const CLOUD_BASE = new THREE.Color('#f6fbff')
+const SUN_BASE = new THREE.Color('#ffffff')
 const COLOR_SCRATCH = new THREE.Color()
 
 export function createWeatherAppearance(): WeatherAppearance {
   return {
     skyTop: new THREE.Color(), skyBottom: new THREE.Color(),
     water: new THREE.Color(), waterDeep: new THREE.Color(),
-    land: new THREE.Color(), cloud: new THREE.Color(),
+    land: new THREE.Color(), cloud: new THREE.Color(), sunColor: new THREE.Color(),
     fogNear: 0, fogFar: 0, sunIntensity: 0,
     hemiIntensity: 0, ambientIntensity: 0, cloudOpacity: 0,
+    sparkle: 0, autumn: 0, foliageLight: 1,
   }
 }
 
 function mixColor(
   out: THREE.Color,
   base: THREE.Color,
-  key: 'skyTop' | 'skyBottom' | 'water' | 'waterDeep' | 'land' | 'cloud',
+  key: 'skyTop' | 'skyBottom' | 'water' | 'waterDeep' | 'land' | 'cloud' | 'sunColor',
   weights: WeatherWeights,
 ) {
   out.setRGB(0, 0, 0)
-  for (const kind of BASE_KINDS) {
+  for (const kind of WEATHER_KINDS) {
     const weight = weights[kind]
+    if (weight <= 0) continue
     COLOR_SCRATCH.copy(base).lerp(STYLES[kind][key], STYLES[kind].blend)
     out.r += COLOR_SCRATCH.r * weight
     out.g += COLOR_SCRATCH.g * weight
@@ -318,6 +371,7 @@ export function resolveWeatherAppearance(
   mixColor(out.waterDeep, base.waterDeep, 'waterDeep', weather.base)
   mixColor(out.land, base.land, 'land', weather.base)
   mixColor(out.cloud, CLOUD_BASE, 'cloud', weather.base)
+  mixColor(out.sunColor, SUN_BASE, 'sunColor', weather.base)
 
   if (weather.rainbow > 0) {
     const amount = weather.rainbow * 0.12
@@ -332,8 +386,12 @@ export function resolveWeatherAppearance(
   out.hemiIntensity = 0
   out.ambientIntensity = 0
   out.cloudOpacity = 0
-  for (const kind of BASE_KINDS) {
+  out.sparkle = 0
+  out.autumn = 0
+  out.foliageLight = 0
+  for (const kind of WEATHER_KINDS) {
     const weight = weather.base[kind]
+    if (weight <= 0) continue
     const preset = STYLES[kind]
     out.fogNear += preset.fogNear * weight
     out.fogFar += preset.fogFar * weight
@@ -341,6 +399,9 @@ export function resolveWeatherAppearance(
     out.hemiIntensity += preset.hemiIntensity * weight
     out.ambientIntensity += preset.ambientIntensity * weight
     out.cloudOpacity += preset.cloudOpacity * weight
+    out.sparkle += preset.sparkle * weight
+    out.autumn += preset.autumn * weight
+    out.foliageLight += preset.foliageLight * weight
   }
   out.sunIntensity += weather.rainbow * 0.08
   return out
@@ -410,7 +471,7 @@ export class WeatherSystem {
     depthTest: true, side: THREE.DoubleSide, fog: false,
   })
   private sunCoreMaterial = new THREE.MeshBasicMaterial({
-    color: '#ffd46c', transparent: true, opacity: 0, depthWrite: false, fog: false,
+    color: '#fff3c9', transparent: true, opacity: 0, depthWrite: false, fog: false,
   })
   private sunHaloMaterial = new THREE.MeshBasicMaterial({
     color: '#ffe7a3', transparent: true, opacity: 0, depthWrite: false, fog: false,
@@ -422,10 +483,10 @@ export class WeatherSystem {
   private rainbow: THREE.Mesh
   private sunGroup = new THREE.Group()
 
-  constructor(seed: string, durationSec: number) {
+  constructor(seed: string, durationSec: number, sections?: readonly WeatherSection[]) {
     this.root.name = 'weather-fx'
     this.precipitationRoot.name = 'weather-precipitation'
-    this.schedule = createWeatherSchedule(seed, durationSec)
+    this.schedule = createWeatherSchedule(seed, durationSec, sections)
     const random = seededRandom(`${seed}:particles`)
     for (let i = 0; i < RAIN_COUNT; i++) {
       const offset = i * 4
@@ -479,8 +540,8 @@ export class WeatherSystem {
     this.rainbow.frustumCulled = false
 
     const core = new THREE.Mesh(new THREE.SphereGeometry(3.1, 12, 8), this.sunCoreMaterial)
-    const halo = new THREE.Mesh(new THREE.SphereGeometry(5.2, 12, 8), this.sunHaloMaterial)
-    this.sunGroup.position.set(-105, 46, -20)
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(5.6, 12, 8), this.sunHaloMaterial)
+    this.sunGroup.position.set(-105, 52, -20)
     this.sunGroup.add(halo, core)
 
     this.precipitationRoot.add(this.rain, this.snow, this.wind)
@@ -490,17 +551,20 @@ export class WeatherSystem {
 
   update(animationTimeSec: number, elapsedSec: number) {
     weatherAt(this.schedule, elapsedSec, this.state)
-    const rainOpacity = this.state.base.rain * 0.18
-    const snowOpacity = this.state.base.snow * 0.46
-    const windOpacity = this.state.base.wind * 0.16
-    const sunOpacity = Math.max(0, this.state.base.sun - this.state.base.wind * 0.10)
+    const b = this.state.base
+    const rainOpacity = b.rain * 0.18
+    const snowOpacity = b.snow * 0.46
+    const windOpacity = b.wind * 0.16
+    const sunOpacity = Math.max(0, b.clear + b.autumn + b.sun + b.wind * 0.35 + b.snow * 0.15)
 
     this.rainMaterial.opacity = rainOpacity
     this.snowMaterial.opacity = snowOpacity
     this.windMaterial.opacity = windOpacity
     this.rainbowMaterial.opacity = this.state.rainbow * 0.25
     this.sunCoreMaterial.opacity = sunOpacity * 0.95
-    this.sunHaloMaterial.opacity = sunOpacity * 0.14
+    this.sunHaloMaterial.opacity = sunOpacity * (0.12 + b.autumn * 0.06 + b.sun * 0.08)
+    // 가을·황금빛 오후는 해가 더 노랗다.
+    this.sunCoreMaterial.color.setRGB(1, 0.96 - (b.sun + b.autumn) * 0.1, 0.8 - (b.sun + b.autumn) * 0.25)
 
     this.rain.visible = rainOpacity > 0.002
     this.snow.visible = snowOpacity > 0.002

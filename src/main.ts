@@ -5,6 +5,7 @@ import {
   type Course, type PaceTier,
 } from './game/courses'
 import { profileSamples } from './game/profile'
+import { paceGaugeState } from './game/paceGauge'
 import { Session, type StallReason } from './game/state'
 import { buildFeedback } from './game/feedback'
 import { saveRecord, thinCurve, personalBest, type SessionRecord } from './game/history'
@@ -367,7 +368,9 @@ async function startRace() {
   cues.primeSpeech()
   metronome.stop()
   const ghost = loadGhost(selectedCourse.id)
-  session = new Session(selectedCourse, selectedTier.split, ghost)
+  // 개발 중에는 `?weather=seed`로 날씨 일정을 고정해 같은 하늘을 다시 볼 수 있다.
+  const weatherSeed = new URLSearchParams(location.search).get('weather')
+  session = new Session(selectedCourse, selectedTier.split, ghost, weatherSeed ? `${selectedCourse.id}:${weatherSeed}` : undefined)
   ambience.reset(`${session.weatherSeed}:ambience`)
   void ambience.prepare()
   unsub?.()
@@ -395,6 +398,7 @@ async function startRace() {
   view?.dispose()
   view = new View(cv, session)
   view.resize()
+  if (import.meta.env.DEV) (window as unknown as { __rowing: unknown }).__rowing = { session, view }
   await requestWakeLock()
 
   const cd = $('countdown')
@@ -615,6 +619,7 @@ function updateHud() {
   // 목표 대비 얼마나 벗어났는지 색으로
   const off = m.split - m.targetSplit
   $('s-split').className = 'v ' + (off < -1.5 ? 'fast' : off > 1.5 ? 'slow' : '')
+  updatePaceGauge(m.split, m.targetSplit, m.gap)
   $('pace-dial').style.setProperty('--dial-fill', `${Math.max(8, session.stroke.phase * 270)}deg`)
 
   // 현재 구간
@@ -679,6 +684,38 @@ function updateHud() {
     lmShownAt = m.elapsed
   } else if (m.elapsed - lmShownAt > 0.5) {
     el.style.opacity = '0'
+  }
+}
+
+function updatePaceGauge(split: number, targetSplit: number, gap: number) {
+  const gauge = $('pace-gauge')
+  const g = paceGaugeState(split, targetSplit)
+  gauge.style.setProperty('--pg-fill', `${(g.fill * 100).toFixed(1)}%`)
+  gauge.style.setProperty('--pg-target', `${(g.target * 100).toFixed(1)}%`)
+  gauge.style.setProperty(
+    '--pg-color',
+    g.state === 'behind' ? '#ff6252' : g.state === 'ahead' ? '#4bc67a' : '#36bce5',
+  )
+  gauge.className = `pace-gauge ${g.state}`
+  $('pg-target').textContent = formatSplitShort(targetSplit)
+
+  const msg = $('pg-msg')
+  const boat = gap >= 0 ? `페이스 보트보다 ${Math.round(gap)}m 앞` : `페이스 보트보다 ${Math.abs(Math.round(gap))}m 뒤`
+  switch (g.state) {
+    case 'idle':
+      msg.textContent = '노를 저어 목표 선까지 끌어올리세요'
+      break
+    case 'behind':
+      msg.textContent = g.delta > 60
+        ? `목표 속도까지 한참 남음 · 더 세게 당기세요 · ${boat}`
+        : `목표보다 ${Math.round(g.delta)}초 느림 · 더 세게 당기세요 · ${boat}`
+      break
+    case 'ok':
+      msg.textContent = `목표 페이스 유지 중 · ${boat}`
+      break
+    case 'ahead':
+      msg.textContent = `목표보다 ${Math.round(-g.delta)}초 빠름 · ${boat}`
+      break
   }
 }
 

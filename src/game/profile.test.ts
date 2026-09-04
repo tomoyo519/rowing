@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   intensityAt, stepAt, meanIntensity, patternTotal, profileSwing, profileRange,
-  profileOscillation,
+  profileOscillation, profileSections,
   type PaceProfile,
 } from './profile'
 
@@ -183,5 +183,47 @@ describe('profileOscillation', () => {
       ],
     }
     expect(profileOscillation(p, 1800)).toBeCloseTo(0.20, 2)
+  })
+})
+
+describe('profileSections', () => {
+  it('인터벌은 스텝 경계가 구간 경계이고 마지막은 코스 끝에서 끝난다', () => {
+    const s = profileSections(intervals, 30 * 60)
+    expect(s[0]).toEqual({ start: 0, end: 180, label: '푸시' })
+    expect(s[1]).toEqual({ start: 180, end: 300, label: '회복' })
+    expect(s.at(-1)!.end).toBe(1800)
+    for (let i = 1; i < s.length; i++) expect(s[i]!.start).toBe(s[i - 1]!.end)
+  })
+
+  it('아주 짧은 스텝은 최소 길이가 찰 때까지 다음 스텝과 합쳐진다', () => {
+    const sprint: PaceProfile = {
+      kind: 'intervals',
+      pattern: [{ sec: 40, intensity: 1.28, label: '전력' }, { sec: 80, intensity: 0.84, label: '회복' }],
+    }
+    const s = profileSections(sprint, 20 * 60)
+    expect(s).toHaveLength(10)
+    expect(s[0]).toEqual({ start: 0, end: 120, label: '전력' })
+    expect(s[9]).toEqual({ start: 1080, end: 1200, label: '전력' })
+  })
+
+  it('웨이브는 반주기마다, 스테디·빌드는 5분마다 나뉜다', () => {
+    const wave = profileSections({ kind: 'wave', periodSec: 330, amplitude: 0.06 }, 30 * 60)
+    expect(wave[0]!.end).toBe(165)
+    expect(wave[0]!.label).toBe('페이스 올림')
+    expect(wave[1]!.label).toBe('페이스 내림')
+    expect(wave.at(-1)!.end).toBe(1800)
+
+    const steady = profileSections({ kind: 'steady' }, 40 * 60)
+    expect(steady).toHaveLength(8)
+    expect(steady.every(x => x.end - x.start === 300)).toBe(true)
+
+    const ramp = profileSections({ kind: 'ramp', from: 0.94, to: 1.06, overSec: 1800 }, 1800)
+    expect(ramp).toHaveLength(6)
+  })
+
+  it('코스 끝의 짧은 자투리는 앞 구간에 붙는다', () => {
+    const s = profileSections({ kind: 'steady' }, 1_260)   // 21분
+    expect(s).toHaveLength(4)
+    expect(s.at(-1)).toEqual({ start: 900, end: 1260, label: '스테디' })
   })
 })

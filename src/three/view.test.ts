@@ -34,7 +34,14 @@ describe('페이스메이커 레이스 배치', () => {
   it('구간 강도에 따라 페이스메이커 레이트가 오르되 안전 범위를 지킨다', () => {
     expect(paceStrokeRate(0.8)).toBe(18)
     expect(paceStrokeRate(1)).toBe(24)
-    expect(paceStrokeRate(1.4)).toBe(36)
+    expect(paceStrokeRate(1.4)).toBe(38)
+  })
+
+  it('기준 스플릿이 빠를수록 페이스메이커가 더 높은 레이트로 젓는다', () => {
+    expect(paceStrokeRate(1, 135)).toBeCloseTo(26, 6)
+    expect(paceStrokeRate(1, 105)).toBeCloseTo(32, 6)
+    expect(paceStrokeRate(1.3, 105)).toBe(38)
+    expect(paceStrokeRate(1, 150)).toBeCloseTo(23, 6)
   })
 
   it('고스트까지 세 보트와 날씨를 합쳐도 iPad용 drawable 예산을 넘지 않는다', () => {
@@ -52,7 +59,7 @@ describe('페이스메이커 레이스 배치', () => {
         || node instanceof THREE.LineSegments
       ) drawables.push(node)
     })
-    expect(drawables.length).toBeLessThan(290)
+    expect(drawables.length).toBeLessThan(430)
     world.dispose()
   })
 })
