@@ -148,6 +148,10 @@ describe('출발 대기 (armed)', () => {
     s.onSample(rowing({ at: 3000, strokeCount: 12 }))
     s.arm()
     expect(s.phase).toBe('running')
+    run(s, 1)
+    expect(s.metrics().speed).toBeGreaterThan(1.5)
+    // 같은 관성으로 출발해 첫 샘플이 잠시 늦어도 페이스 보트에 1m 넘게 뒤처지지 않는다.
+    expect(Math.abs(s.metrics().gap)).toBeLessThan(0.6)
   })
 
   it('시험 삼아 한 번 당긴 것으로는 arm 즉시 출발하지 않는다', () => {

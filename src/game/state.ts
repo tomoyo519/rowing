@@ -195,7 +195,9 @@ export class Session {
   private launch(s: RowerSample) {
     this.phase = 'running'
     this.boat.reset()
-    this.boat.onSample(s.totalDistance ?? null, 0)
+    // 카운트다운 중 이미 리듬을 타서 arm()과 동시에 출발하는 경로에서도 플레이어와
+    // 페이스 보트가 같은 관성으로 출발해야 한다. 분할 알림이면 직전 유효 속도를 쓴다.
+    this.boat.onSample(s.totalDistance ?? null, this.sampleSpeed(s) ?? this.lastReportedSpeed ?? 0)
     if (this.armStrokeCount !== null) this.startStrokeCount = this.armStrokeCount
   }
 
