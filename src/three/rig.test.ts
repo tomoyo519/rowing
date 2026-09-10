@@ -230,6 +230,24 @@ describe('자연스러운 자세', () => {
     expect(reachAtFinish).toBeGreaterThan(reachAtCatch + 0.01)
   })
 
+  it('교차 지점에서 왼손이 오른손 위로 충분히 떨어져 주먹이 겹치지 않는다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const e = engineAt(0)
+    let minGap = Infinity
+    let minGapAtCrossover = Infinity
+    for (let k = 0; k < 120; k++) {
+      e.phase = k / 120
+      rig.apply(e.pose(), 1 / 60, 4)
+      const [l, r] = rig.joints.handle
+      const gap = l!.distanceTo(r!)
+      minGap = Math.min(minGap, gap)
+      // 좌우로 겹치는 구간에서는 세로 간격이 주먹 높이(0.066)보다 커야 한다
+      if (Math.abs(l!.z - r!.z) < 0.06) minGapAtCrossover = Math.min(minGapAtCrossover, l!.y - r!.y)
+    }
+    expect(minGap).toBeGreaterThan(0.08)
+    expect(minGapAtCrossover).toBeGreaterThan(0.08)
+  })
+
   it('피니시에서 팔꿈치는 손잡이보다 뒤(+X)·바깥에 있다', () => {
     const rig = new Rig(COLORS_PLAYER)
     const e = engineAt(0.01)

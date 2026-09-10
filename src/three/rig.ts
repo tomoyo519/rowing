@@ -53,12 +53,6 @@ const SHOULDER_REACH = 0.045
 const SHOULDER_RETRACT = 0.02
 /** 손잡이는 손 너머로 조금 더 이어진다 (m) */
 const HANDLE_TAIL = 0.09
-/**
- * 스컬은 왼손이 오른손 위로 지나간다. 왼쪽(+Z) 노받이를 1.5cm 높게 리깅하고 왼손을 조금 더 들어
- * 두 손이 정면에서 겹쳐 뚫고 지나가지 않게 한다. OUTBOARD × HAND_CROSS_PHI ≈ LOCK_RISE라 블레이드 깊이는 같다.
- */
-const LOCK_RISE = 0.015
-const HAND_CROSS_PHI = 0.008
 const UPPER_ARM = 0.30
 const FOREARM = 0.30
 /**
@@ -81,8 +75,22 @@ const LOCK = { x: -0.30, y: 0.47, z: 0.85 }
 const INBOARD = 0.90
 const OUTBOARD = 1.90
 /** 노의 상하 각. 손을 올리면 지렛대라 블레이드가 내려간다 */
-const PHI_DRIVE = 0.215     // 블레이드가 수면에 잠김
+const PHI_DRIVE = 0.23      // 블레이드가 수면에 잠김 (교차 지점의 좌우 깊이 차이를 감안해 조금 깊게)
 const PHI_RECOVERY = 0.145  // 블레이드가 수면 위로 뜸
+
+/**
+ * 스컬은 왼손이 오른손 **위로** 지나간다.
+ *
+ * 두 손잡이는 교차 지점(θ≈0)에서 좌우로는 거의 같은 자리에 온다. 그대로 두면 주먹(폭 7.6cm)과
+ * 손목이 서로 뚫고 지나가므로 세로로 9cm쯤 벌려야 한다. 세 요소를 합친다:
+ * - 왼쪽(+Z) 노받이를 2cm 높게 리깅한다 (실제 싱글도 1~2cm)
+ * - HAND_CROSS_BASE: 노받이 높이 차가 블레이드 깊이에 미치는 영향을 상쇄하는 상시 손 각도 오프셋
+ * - HAND_STACK: 교차 지점에서만(cos²θ 가중) 왼손을 더 들고 오른손을 더 내린다.
+ *   캐치·피니시에서는 손이 좌우로 멀리 떨어져 있어 필요 없고, 이때 블레이드 깊이가 거의 같아진다.
+ */
+const LOCK_RISE = 0.02
+const HAND_CROSS_BASE = LOCK_RISE / OUTBOARD
+const HAND_STACK = 0.020
 
 export const RACING_HULL_LENGTH = 8.2
 
@@ -706,8 +714,11 @@ export class Rig {
       shoulderPt.z = side * SHOULDER_HALF
       this.joints.armRoot[i]!.copy(shoulderPt)
 
-      // 왼손(+Z)이 오른손 위로 지나간다 — 노받이도 손도 왼쪽이 조금 높다
-      const phiS = phi + side * HAND_CROSS_PHI
+      // 왼손(+Z)이 오른손 위로 지나간다. 스택 양은 스윕각에 달렸는데 스윕각은 손 각도로 푸니
+      // 기본 오프셋으로 한 번 풀어 θ를 얻고, 그 θ로 스택을 정해 다시 푼다.
+      const theta0 = solveSweep(shoulderPt, armReach, phi + side * HAND_CROSS_BASE, side)
+      const stack = HAND_CROSS_BASE + HAND_STACK * Math.cos(theta0) ** 2
+      const phiS = phi + side * stack
       const theta = solveSweep(shoulderPt, armReach, phiS, side)
       if (i === 0) this.joints.theta = theta
       const sinTheta = Math.sin(theta), cosTheta = Math.cos(theta)
