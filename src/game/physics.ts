@@ -36,7 +36,8 @@ export function formatSplit(sec: number): string {
 
 /** 페이스 티어 라벨용 — 소수점 없이 mm:ss */
 export function formatSplitShort(sec: number): string {
-  if (!isFinite(sec) || sec <= 0) return '--:--'
+  // 거의 멈춘 속도에서 나오는 138:53 같은 숫자는 페이스가 아니다
+  if (!isFinite(sec) || sec <= 0 || sec > 600) return '--:--'
   const m = Math.floor(sec / 60)
   const s = Math.round(sec - m * 60)
   return `${m}:${String(s).padStart(2, '0')}`
@@ -83,7 +84,13 @@ export class BoatTracker {
       this.deviceDistance = 0
       this.distance = 0
     } else {
-      this.deviceDistance = deviceDistance - this.origin
+      const relative = deviceDistance - this.origin
+      if (this.deviceDistance !== null && relative < this.deviceDistance - 5) {
+        // 콘솔이 새 운동을 시작해 누적 거리를 리셋했다. 화면 위치를 그대로 이어가도록 기준만 옮긴다.
+        this.origin = deviceDistance - this.deviceDistance
+      } else {
+        this.deviceDistance = relative
+      }
     }
     this.sinceSample = 0
   }

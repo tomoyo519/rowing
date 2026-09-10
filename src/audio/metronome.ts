@@ -1,4 +1,7 @@
 const MUTE_KEY = 'makeRowing.metronomeMuted'
+/** 똑(pull)과 딱(return)의 최대 음량. 마스터 게인(0.85) 뒤에 곱해진다. */
+export const CLICK_GAIN_PULL = 0.55
+export const CLICK_GAIN_RETURN = 0.38
 
 export type StrokeCue = 'pull' | 'return'
 
@@ -151,13 +154,14 @@ export class RowingMetronome {
     const oscillator = context.createOscillator()
     const envelope = context.createGain()
     const isPull = cue === 'pull'
-    const duration = isPull ? 0.052 : 0.03
+    const duration = isPull ? 0.07 : 0.042
 
     oscillator.type = 'triangle'
     // 고정된 두 음높이와 짧은 감쇠를 써서 기존의 `삐융` 같은 전자음 느낌을 없앤다.
     oscillator.frequency.setValueAtTime(isPull ? 520 : 980, now)
     envelope.gain.setValueAtTime(0.0001, now)
-    envelope.gain.exponentialRampToValueAtTime(isPull ? 0.13 : 0.085, now + 0.003)
+    // 로잉머신 팬 소리 위로 들려야 하므로 크게 낸다. 예전 0.13/0.085는 iPad 스피커로는 거의 안 들렸다.
+    envelope.gain.exponentialRampToValueAtTime(isPull ? CLICK_GAIN_PULL : CLICK_GAIN_RETURN, now + 0.003)
     envelope.gain.exponentialRampToValueAtTime(0.0001, now + duration)
     oscillator.connect(envelope)
     envelope.connect(master)

@@ -34,6 +34,12 @@ export class AudioCues {
     this.say('시작')
   }
 
+  /** 첫 스트로크가 들어와 페이스 보트가 출발할 때. '시작'을 또 말하면 두 번 시작하는 것 같아 소리만 낸다. */
+  launch() {
+    this.tone(660, 0.1, 0.5)
+    this.tone(990, 0.2, 0.5, 0.08)
+  }
+
   /** @param harder 더 빡세지는 구간이면 올라가는 음, 아니면 내려가는 음 */
   segment(label: string, harder: boolean) {
     if (harder) {

@@ -1,3 +1,4 @@
+import * as THREE from 'three'
 import { describe, it, expect } from 'vitest'
 import {
   Rig, COLORS_PLAYER, DIMS, RACING_HULL_LENGTH, createRacingHullGeometry,
@@ -44,18 +45,65 @@ describe('Rig 관절 계산', () => {
     expect(seen.size).toBe(1)
   })
 
-  it('블레이드는 드라이브에 물에 잠기고 리커버리엔 뜬다', () => {
+  it('블레이드는 드라이브에 물에 잠기고 리커버리엔 뜨며, 그 사이를 한 프레임에 건너뛰지 않는다', () => {
     const rig = new Rig(COLORS_PLAYER)
     const drive: number[] = []
     const recovery: number[] = []
-    for (const { pose } of posesAcrossCycle()) {
+    const ys: number[] = []
+    for (const { pose } of posesAcrossCycle(26, 120)) {
       rig.apply(pose, 1 / 60, 4)
-      ;(pose.inWater ? drive : recovery).push(rig.joints.blade[0]!.y)
+      const y = rig.joints.blade[0]!.y
+      ys.push(y)
+      // 진입·추출 중인 샘플은 어느 쪽도 아니다
+      if (pose.bladeDepth > 0.95) drive.push(y)
+      else if (pose.bladeDepth < 0.05) recovery.push(y)
     }
+    expect(drive.length).toBeGreaterThan(10)
+    expect(recovery.length).toBeGreaterThan(20)
     // 드라이브: 수면(y=0) 근처
     for (const y of drive) expect(Math.abs(y)).toBeLessThan(0.09)
     // 리커버리: 확실히 수면 위
     for (const y of recovery) expect(y).toBeGreaterThan(0.10)
+    // 잠김↔뜸 사이 높이 차가 한 샘플(1/120 사이클)에 다 일어나지 않는다
+    let worst = 0
+    for (let i = 1; i < ys.length; i++) worst = Math.max(worst, Math.abs(ys[i]! - ys[i - 1]!))
+    const range = Math.max(...ys) - Math.min(...ys)
+    expect(worst).toBeLessThan(range * 0.5)
+  })
+
+  it('블레이드 면은 드라이브에 수직, 리커버리에 수평이다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const e = new StrokeEngine()
+    e.onSample(26, 0, 0); e.update(0.5); e.update(0.5); e.update(0.5)
+    const df = e.driveFraction
+    /** 블레이드 면 법선의 수직 성분. 1이면 눕힌 것(페더), 0이면 세운 것(스퀘어) */
+    const normalY = () => {
+      rig.apply(e.pose(), 1 / 60, 4)
+      const mesh = rig.bladeMeshes[0]!
+      mesh.updateMatrixWorld(true)
+      return Math.abs(
+        new THREE.Vector3(0, 0, 1)
+          .applyQuaternion(mesh.getWorldQuaternion(new THREE.Quaternion())).y,
+      )
+    }
+    e.phase = df * 0.5
+    expect(normalY()).toBeLessThan(0.35)                    // 드라이브: 세워져 물을 민다
+    e.phase = df + (1 - df) * 0.5
+    expect(normalY()).toBeGreaterThan(0.85)                 // 리커버리: 눕혀 물 위를 스친다
+    e.phase = 0.995
+    expect(normalY()).toBeLessThan(0.45)                    // 캐치 직전: 다시 세워져 있다
+  })
+
+  it('블레이드는 드라이브에서 세워지고 리커버리에서 눕는다', () => {
+    const e = new StrokeEngine()
+    e.onSample(26, 0, 0); e.update(0.5); e.update(0.5); e.update(0.5)
+    e.phase = e.driveFraction * 0.5
+    expect(e.pose().square).toBe(1)
+    e.phase = e.driveFraction + (1 - e.driveFraction) * 0.5
+    expect(e.pose().square).toBe(0)
+    // 캐치 직전엔 다시 세워져 있다
+    e.phase = 0.995
+    expect(e.pose().square).toBeGreaterThan(0.9)
   })
 
   it('노는 지렛대다 — 손잡이가 뒤로 갈 때 블레이드는 앞으로 간다', () => {
@@ -135,13 +183,89 @@ describe('Rig 관절 계산', () => {
     const rig = new Rig(COLORS_PLAYER)
     for (const { pose } of posesAcrossCycle()) {
       rig.apply(pose, 1 / 60, 4)
-      const sh = rig.joints.shoulder.clone().setZ(0.17)
+      const sh = rig.joints.armRoot[0]!
       const el = rig.joints.elbow[0]!
       const ha = rig.joints.handle[0]!
       // 위팔 0.30, 아래팔 0.30 — IK가 클램프해도 각 뼈 길이는 유지되어야 한다
       expect(sh.distanceTo(el)).toBeCloseTo(0.30, 4)
       expect(el.distanceTo(ha)).toBeCloseTo(0.30, 4)
     }
+  })
+})
+
+describe('자연스러운 자세', () => {
+  function engineAt(phase: number) {
+    const e = new StrokeEngine()
+    e.onSample(26, 0, 0); e.update(0.5); e.update(0.5); e.update(0.5)
+    e.phase = phase
+    return e
+  }
+
+  it('캐치에서 등이 허리보다 더 굽고, 피니시에서 가슴이 열린다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const catchE = engineAt(0.01)
+    rig.apply(catchE.pose(), 1 / 60, 4)
+    const hip = rig.joints.hip.clone()
+    const shoulder = rig.joints.shoulder.clone()
+    // 두 마디 척추: 어깨가 한 마디 직선(TORSO × sin bodyAngle)보다 더 앞(-X)으로 나간다
+    const straight = hip.x - Math.sin(catchE.pose().bodyAngle) * 0.55
+    expect(shoulder.x).toBeLessThan(straight)
+
+    const finishE = engineAt(catchE.driveFraction * 0.97)
+    rig.apply(finishE.pose(), 1 / 60, 4)
+    expect(rig.joints.shoulder.x).toBeGreaterThan(rig.joints.hip.x)
+  })
+
+  it('어깨는 캐치에서 손잡이 쪽으로 나가고 피니시에서 뒤로 당겨진다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const e = engineAt(0.01)
+    rig.apply(e.pose(), 1 / 60, 4)
+    const reachAtCatch = rig.joints.armRoot[0]!.x - rig.joints.shoulder.x
+    e.phase = e.driveFraction * 0.97
+    rig.apply(e.pose(), 1 / 60, 4)
+    const reachAtFinish = rig.joints.armRoot[0]!.x - rig.joints.shoulder.x
+    // 팔 관절은 어깨선 아래에 있어 이 값에는 몸통 기울기가 섞인다.
+    // 그래도 캐치에선 어깨보다 앞(-X), 피니시에선 뒤로 물러나야 한다.
+    expect(reachAtCatch).toBeLessThan(0)
+    expect(reachAtFinish).toBeGreaterThan(reachAtCatch + 0.01)
+  })
+
+  it('피니시에서 팔꿈치는 손잡이보다 뒤(+X)·바깥에 있다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const e = engineAt(0.01)
+    e.phase = e.driveFraction * 0.97
+    rig.apply(e.pose(), 1 / 60, 4)
+    const elbow = rig.joints.elbow[0]!
+    const handle = rig.joints.handle[0]!
+    expect(elbow.x).toBeGreaterThan(handle.x)
+    expect(Math.abs(elbow.z)).toBeGreaterThan(0.17)
+  })
+
+  it('보트는 캐치에서 뱃머리가 들리고 피니시에서 내려간다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const e = engineAt(0.01)
+    rig.apply(e.pose(), 1 / 60, 4)
+    rig.setCourseAttitude(0, 0)
+    const pitchAtCatch = rig.group.children[0]!.rotation.z
+    e.phase = e.driveFraction + (1 - e.driveFraction) * 0.05
+    rig.apply(e.pose(), 1 / 60, 4)
+    rig.setCourseAttitude(0, 0)
+    const pitchAtFinish = rig.group.children[0]!.rotation.z
+    expect(pitchAtCatch).toBeGreaterThan(pitchAtFinish + 0.01)
+    expect(Math.abs(pitchAtCatch)).toBeLessThan(0.03)
+  })
+
+  it('예약 시각이 되면 눈을 감았다가 다시 뜬다', () => {
+    const rig = new Rig(COLORS_PLAYER, 1, 0)
+    const e = engineAt(0.5)
+    const eyes = (rig as unknown as { eyes: THREE.Mesh[] }).eyes
+    let minScale = 1
+    for (let i = 0; i < 120; i++) {
+      rig.apply(e.pose(), 1 / 60, 4)
+      minScale = Math.min(minScale, ...eyes.map(eye => eye.scale.y))
+    }
+    expect(minScale).toBeLessThan(0.2)
+    expect(eyes.every(eye => eye.scale.y > 0.99)).toBe(true)
   })
 })
 

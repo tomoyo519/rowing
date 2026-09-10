@@ -34,6 +34,9 @@ const MEADOW_OUTER_Z = BANK_OUTER_Z + 60
 const BANK_STEP = 8
 const TREE_COUNT = 36
 const SPECTATOR_COUNT = 12
+/** 군중은 흔치 않아야 한다 — 개별 관중(180m)보다 훨씬 긴 주기로 되풀이된다 */
+const CROWD_SPAN_MIN = 620
+const CROWD_SPAN_JITTER = 360
 const DUCK_COUNT = 4
 const SWAN_COUNT = 2
 const CLOUD_COUNT = 7
@@ -59,8 +62,32 @@ export interface SceneryPlacement {
   phase: number
 }
 
+export interface CrowdPerson {
+  /** 군중 중심에서의 오프셋 (m) */
+  dx: number
+  dz: number
+  scale: number
+  phase: number
+  pose: SpectatorPose
+  colorIndex: number
+  hat: number
+  skinIndex: number
+  hairIndex: number
+  trousersIndex: number
+}
+
+export interface SceneryCrowd extends SceneryPlacement {
+  side: Side
+  span: number
+  people: CrowdPerson[]
+  /** 현수막을 든 군중인지 */
+  banner: boolean
+}
+
 export interface SceneryLayout {
   trees: (SceneryPlacement & { side: Side; kind: TreeKind; leaf: number; lean: number })[]
+  /** 열댓 명이 한자리에 모인 응원 무리 — 가끔만 나타난다 */
+  crowds: SceneryCrowd[]
   spectators: (SceneryPlacement & {
     side: Side
     colorIndex: number
@@ -307,6 +334,46 @@ export function createSceneryLayout(courseId: string): SceneryLayout {
     })
   }
 
+  // 군중: 한두 군데, 12~17명이 두세 줄로 모인다. 앞줄이 환호하고 뒷줄은 서 있거나 손을 흔든다.
+  const crowds: SceneryLayout['crowds'] = []
+  const crowdCount = random() < 0.55 ? 1 : 2
+  for (let c = 0; c < crowdCount; c++) {
+    const side: Side = c % 2 === 0 ? 1 : -1
+    const headcount = 12 + Math.floor(random() * 6)
+    const people: CrowdPerson[] = []
+    const rows = headcount > 14 ? 3 : 2
+    for (let i = 0; i < headcount; i++) {
+      const row = i % rows
+      const col = Math.floor(i / rows)
+      const perRow = Math.ceil(headcount / rows)
+      const frontPoses: SpectatorPose[] = ['cheer', 'cheer', 'wave', 'clap']
+      const backPoses: SpectatorPose[] = ['stand', 'wave', 'stand', 'cheer']
+      const poseList = row === 0 ? frontPoses : backPoses
+      people.push({
+        dx: (col - (perRow - 1) / 2) * 1.05 + (random() - 0.5) * 0.5,
+        dz: row * 1.1 + (random() - 0.5) * 0.35,
+        scale: 0.86 + random() * 0.22,
+        phase: random() * Math.PI * 2,
+        pose: poseList[Math.floor(random() * poseList.length)]!,
+        colorIndex: Math.floor(random() * SHIRT_COLORS.length),
+        hat: random() < 0.4 ? 1 + Math.floor(random() * 2) : 0,
+        skinIndex: Math.floor(random() * SKIN_TONES.length),
+        hairIndex: Math.floor(random() * HAIR_COLORS.length),
+        trousersIndex: Math.floor(random() * TROUSER_COLORS.length),
+      })
+    }
+    crowds.push({
+      baseX: 140 + c * 330 + random() * 160,
+      z: side * (BANK_Z + 1.6),
+      side,
+      scale: 1,
+      phase: random() * Math.PI * 2,
+      span: CROWD_SPAN_MIN + random() * CROWD_SPAN_JITTER,
+      people,
+      banner: random() < 0.7,
+    })
+  }
+
   for (let i = 0; i < DUCK_COUNT; i++) {
     const side: Side = i % 2 === 0 ? 1 : -1
     ducks.push({
@@ -395,12 +462,35 @@ export function createSceneryLayout(courseId: string): SceneryLayout {
   }
 
   return {
-    trees, spectators, ducks, swans, clouds, sky, props, bushes,
+    trees, crowds, spectators, ducks, swans, clouds, sky, props, bushes,
     treeSpan, bushSpan: bushCursor + 8,
   }
 }
 
 // ── 나무 ────────────────────────────────────────────────────
+
+/**
+ * 정점을 중심에서 불규칙하게 밀고 당겨 매끈한 구·원뿔의 도형 티를 없앤다.
+ * 위치를 양자화해 해시하므로 구의 이음새나 극점처럼 같은 자리에 겹친 정점은
+ * 같은 값을 받아 틈이 벌어지지 않는다. 원점 기준으로 스케일하니 이동 전에 불러야 한다.
+ */
+function roughen(geometry: THREE.BufferGeometry, amount: number, seed: number) {
+  const position = geometry.getAttribute('position') as THREE.BufferAttribute
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i)
+    const y = position.getY(i)
+    const z = position.getZ(i)
+    const key = `${seed}:${Math.round(x * 40)}:${Math.round(y * 40)}:${Math.round(z * 40)}`
+    const h = hashString(key) / 4294967296
+    // 두 옥타브: 큰 울퉁불퉁함 + 잔주름
+    const h2 = hashString(`${key}:fine`) / 4294967296
+    const k = 1 + (h - 0.5) * 2 * amount + (h2 - 0.5) * amount * 0.5
+    position.setXYZ(i, x * k, y * k, z * k)
+  }
+  position.needsUpdate = true
+  geometry.computeVertexNormals()
+  return geometry
+}
 
 /** 수종별로 다른 실루엣. 줄기와 잎을 각각 메시 하나로 합친다. */
 function createTree(
@@ -413,81 +503,105 @@ function createTree(
   const group = new THREE.Group()
   const trunkParts: THREE.BufferGeometry[] = []
   const leafParts: THREE.BufferGeometry[] = []
-  const sphere = (r: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1) => {
-    const g = new THREE.SphereGeometry(r, 9, 7)
+  let seed = Math.round(phase * 1000)
+  // 잎 덩어리: 세분화를 올리고 표면을 흐트러뜨려 부드럽고 울퉁불퉁한 수관을 만든다
+  const sphere = (r: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1, rough = 0.17) => {
+    const g = roughen(new THREE.SphereGeometry(r, 12, 9), rough, seed++)
     g.scale(sx, sy, sz)
     g.translate(x, y, z)
     leafParts.push(g)
   }
+  const cone = (r: number, h: number, y: number, rough = 0.12) => {
+    const g = roughen(new THREE.ConeGeometry(r, h, 11, 3), rough, seed++)
+    g.translate(0, y, 0)
+    leafParts.push(g)
+  }
+  // 줄기: 아래가 굵고 살짝 휘어 있으며 뿌리 부분이 퍼진다
+  const stem = (rTop: number, rBottom: number, h: number, lean = 0.06) => {
+    const g = new THREE.CylinderGeometry(rTop, rBottom, h, 9, 3)
+    const position = g.getAttribute('position') as THREE.BufferAttribute
+    for (let i = 0; i < position.count; i++) {
+      const y = position.getY(i)
+      const t = (y + h / 2) / h
+      // 뿌리 쪽 벌어짐과 위로 갈수록 한쪽으로 기우는 휨
+      const flare = t < 0.12 ? 1 + (0.12 - t) * 3.5 : 1
+      position.setX(i, position.getX(i) * flare + Math.sin(t * Math.PI * 0.5) * lean * h)
+      position.setZ(i, position.getZ(i) * flare)
+    }
+    position.needsUpdate = true
+    g.computeVertexNormals()
+    g.translate(0, h / 2, 0)
+    trunkParts.push(g)
+  }
   let trunkMaterial = trunk
+
+  const wobble = Math.sin(phase)     // 나무마다 수관이 한쪽으로 치우친다
 
   switch (kind) {
     case 'oak': {
-      const t = new THREE.CylinderGeometry(0.22, 0.36, 2.8, 7)
-      t.translate(0, 1.4, 0)
-      trunkParts.push(t)
+      stem(0.22, 0.38, 2.8, 0.05)
       for (const z of [-0.6, 0.6]) {
         trunkParts.push(tubeBetween(v(0, 2.2, 0), v(z * 1.5, 3.4, z), 0.12, 0.06))
       }
-      sphere(1.9, 0, 4.1, 0, 1.15, 0.95, 1.1)
-      sphere(1.45, -1.5, 3.5, 0.5)
-      sphere(1.4, 1.4, 3.7, -0.4)
-      sphere(1.3, 0.3, 5.2, 0.4)
+      // 큰 덩어리 여러 개가 서로 파고들어 한 덩이 수관이 된다
+      sphere(1.9, wobble * 0.3, 4.1, 0, 1.2, 0.9, 1.15)
+      sphere(1.5, -1.5, 3.5, 0.5, 1, 0.9, 1)
+      sphere(1.45, 1.4, 3.7, -0.4)
+      sphere(1.3, 0.3, 5.2, 0.4, 1.1, 0.85, 1.1)
       sphere(1.2, -0.4, 3.3, -1.2)
+      sphere(1.1, 0.9, 4.9, 1.1)
+      sphere(1.0, -1.1, 4.8, -0.8)
       break
     }
     case 'birch': {
       trunkMaterial = birch
-      const t = new THREE.CylinderGeometry(0.08, 0.14, 4.6, 6)
-      t.translate(0, 2.3, 0)
-      trunkParts.push(t)
+      stem(0.08, 0.15, 4.6, 0.09)
       trunkParts.push(tubeBetween(v(0, 3.0, 0), v(0.9, 4.4, 0.3), 0.05, 0.03))
-      sphere(1.0, 0, 4.6, 0, 0.85, 1.2, 0.85)
-      sphere(0.85, 0.7, 5.4, 0.2, 0.8, 1.1, 0.8)
-      sphere(0.8, -0.6, 5.2, -0.3, 0.8, 1.1, 0.8)
+      trunkParts.push(tubeBetween(v(0, 3.6, 0), v(-0.7, 4.8, -0.2), 0.04, 0.025))
+      sphere(1.05, 0, 4.7, 0, 0.85, 1.25, 0.85, 0.2)
+      sphere(0.9, 0.75, 5.4, 0.25, 0.8, 1.15, 0.8, 0.2)
+      sphere(0.85, -0.65, 5.2, -0.3, 0.8, 1.1, 0.8, 0.2)
+      sphere(0.6, 0.2, 6.1, -0.1, 0.8, 1.0, 0.8, 0.2)
       break
     }
     case 'pine': {
-      const t = new THREE.CylinderGeometry(0.14, 0.24, 2.2, 6)
-      t.translate(0, 1.1, 0)
-      trunkParts.push(t)
-      for (const [r, h, y] of [[1.9, 2.8, 2.9], [1.5, 2.5, 4.4], [1.05, 2.3, 5.8]] as const) {
-        const cone = new THREE.ConeGeometry(r, h, 8)
-        cone.translate(0, y, 0)
-        leafParts.push(cone)
-      }
+      stem(0.13, 0.26, 2.4, 0.03)
+      // 층이 많고 반지름이 조금씩 흔들려야 가지가 층층이 뻗은 침엽수처럼 보인다
+      const tiers: [number, number, number][] = [
+        [2.0, 2.2, 2.8], [1.7, 2.1, 3.9], [1.4, 2.0, 4.9], [1.1, 1.9, 5.8], [0.75, 1.7, 6.6],
+      ]
+      for (const [r, h, y] of tiers) cone(r * (1 + wobble * 0.08), h, y, 0.14)
       break
     }
     case 'poplar': {
-      const t = new THREE.CylinderGeometry(0.1, 0.18, 2.6, 6)
-      t.translate(0, 1.3, 0)
-      trunkParts.push(t)
-      sphere(4.2, 0, 5.4, 0, 0.36, 1.0, 0.36)
-      sphere(2.2, 0, 3.2, 0, 0.5, 0.7, 0.5)
+      stem(0.1, 0.2, 2.6, 0.04)
+      sphere(4.2, 0, 5.4, 0, 0.36, 1.0, 0.36, 0.12)
+      sphere(2.4, 0.15, 3.3, 0, 0.5, 0.7, 0.5, 0.15)
+      sphere(1.6, -0.1, 8.2, 0, 0.55, 0.9, 0.55, 0.15)
       break
     }
     case 'willow': {
-      const t = new THREE.CylinderGeometry(0.26, 0.42, 2.4, 7)
-      t.translate(0, 1.2, 0)
-      trunkParts.push(t)
-      sphere(2.1, 0, 3.9, 0, 1.15, 0.7, 1.15)
-      for (let i = 0; i < 9; i++) {
-        const a = (i / 9) * Math.PI * 2 + phase
-        const r = 2.0 + Math.sin(a * 3) * 0.2
-        const frond = new THREE.CylinderGeometry(0.08, 0.24, 2.6, 5)
-        frond.translate(Math.cos(a) * r, 2.4, Math.sin(a) * r)
+      stem(0.26, 0.46, 2.4, 0.1)
+      sphere(2.1, wobble * 0.3, 3.9, 0, 1.15, 0.7, 1.15, 0.14)
+      sphere(1.4, -wobble * 0.5, 4.6, 0.5, 1.0, 0.7, 1.0, 0.14)
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2 + phase
+        const r = 2.0 + Math.sin(a * 3) * 0.25
+        const droop = 2.4 + Math.sin(a * 2 + phase) * 0.4
+        const frond = new THREE.CylinderGeometry(0.06, 0.22, droop, 6)
+        frond.translate(Math.cos(a) * r, 3.3 - droop / 2, Math.sin(a) * r)
         leafParts.push(frond)
       }
       break
     }
     case 'maple': {
-      const t = new THREE.CylinderGeometry(0.2, 0.3, 2.6, 7)
-      t.translate(0, 1.3, 0)
-      trunkParts.push(t)
-      sphere(1.75, 0, 3.9, 0, 1.05, 1.0, 1.05)
-      sphere(1.4, -1.1, 4.5, 0.2)
-      sphere(1.35, 1.0, 4.6, -0.3)
-      sphere(1.1, 0.1, 5.4, 0.5)
+      stem(0.2, 0.32, 2.6, 0.06)
+      sphere(1.8, wobble * 0.25, 3.9, 0, 1.08, 0.95, 1.08)
+      sphere(1.45, -1.1, 4.5, 0.2)
+      sphere(1.4, 1.0, 4.6, -0.3)
+      sphere(1.15, 0.1, 5.5, 0.5)
+      sphere(1.0, 0.6, 3.4, 1.0)
+      sphere(0.95, -0.7, 3.6, -1.1)
       break
     }
   }
@@ -859,6 +973,25 @@ function createSignpostGeometry() {
   return mergeParts(parts)
 }
 
+/** 군중 뒤에 세운 응원 현수막. 기둥 둘 사이에 천이 걸려 있다. */
+function createBannerGeometry(width: number) {
+  const parts: THREE.BufferGeometry[] = []
+  const y = 2.55
+  for (const x of [-width / 2, width / 2]) {
+    parts.push(paint(new THREE.CylinderGeometry(0.05, 0.06, 3.1, 6), '#d8dde2', at(x, 1.55, 0)))
+  }
+  parts.push(paint(new THREE.BoxGeometry(width, 0.9, 0.05), '#f4f1ea', at(0, y, 0)))
+  parts.push(paint(new THREE.BoxGeometry(width * 0.92, 0.14, 0.06), '#c94f3d', at(0, y + 0.25, -0.01)))
+  parts.push(paint(new THREE.BoxGeometry(width * 0.92, 0.14, 0.06), '#3f7fd6', at(0, y - 0.25, -0.01)))
+  // 글자처럼 보이는 색 블록들
+  const glyphs = Math.max(3, Math.floor(width / 0.55))
+  for (let i = 0; i < glyphs; i++) {
+    const gx = -width * 0.42 + (i + 0.5) * (width * 0.84 / glyphs)
+    parts.push(paint(new THREE.BoxGeometry(0.28, 0.32, 0.06), '#1f2a33', at(gx, y, -0.02)))
+  }
+  return mergeParts(parts)
+}
+
 // ── 하늘 ────────────────────────────────────────────────────
 
 function createCloud(
@@ -1060,6 +1193,7 @@ export class World {
   private weatherAppearance = createWeatherAppearance()
   private foliage: FoliageMaterial[] = []
   private spectators: LoopObject[] = []
+  private crowds: LoopObject[] = []
   private ducks: LoopObject[] = []
   private clouds: LoopObject[] = []
   private skyObjects: LoopObject[] = []
@@ -1171,7 +1305,8 @@ export class World {
 
     for (const [green, fall] of LEAF_PALETTES) {
       this.foliage.push({
-        material: new THREE.MeshStandardMaterial({ color: green, flatShading: true, roughness: 0.95 }),
+        // 평면 음영이면 도형 티가 그대로 난다. 흐트러진 정점 위에 부드러운 음영을 얹어야 잎 덩어리로 읽힌다.
+        material: new THREE.MeshStandardMaterial({ color: green, flatShading: false, roughness: 0.95 }),
         green: new THREE.Color(green),
         fall: new THREE.Color(fall),
       })
@@ -1197,8 +1332,8 @@ export class World {
     const random = seededRandom(`${this.course.id}:scenery-detail`)
     const painted = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 })
     const paintedSmooth = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: false, roughness: 0.7 })
-    const trunkMaterial = new THREE.MeshStandardMaterial({ color: TRUNK_COLOR, flatShading: true, roughness: 0.95 })
-    const birchMaterial = new THREE.MeshStandardMaterial({ color: BIRCH_COLOR, flatShading: true, roughness: 0.8 })
+    const trunkMaterial = new THREE.MeshStandardMaterial({ color: TRUNK_COLOR, flatShading: false, roughness: 0.95 })
+    const birchMaterial = new THREE.MeshStandardMaterial({ color: BIRCH_COLOR, flatShading: false, roughness: 0.8 })
 
     // ── 나무 ──────────────────────────────────────────────
     for (const item of layout.trees) {
@@ -1218,7 +1353,7 @@ export class World {
     // ── 덤불 (인스턴스) ───────────────────────────────────
     this.bushLayout = layout.bushes
     this.bushSpan = layout.bushSpan
-    const bushGeometry = new THREE.IcosahedronGeometry(0.75, 1)
+    const bushGeometry = roughen(new THREE.SphereGeometry(0.75, 10, 7), 0.2, 7)
     bushGeometry.scale(1.25, 0.85, 1.1)
     for (const leaf of [1, 5]) {
       const bush = new THREE.InstancedMesh(bushGeometry, this.foliage[leaf]!.material, layout.bushes.length)
@@ -1252,6 +1387,41 @@ export class World {
         obj: person, baseX: item.baseX, baseY: 0.85, baseZ: item.z,
         baseYaw: person.rotation.y,
         span: spectatorSpan, phase: item.phase, animated: item.pose !== 'sit', kind: item.pose,
+      })
+    }
+
+    // ── 군중 ──────────────────────────────────────────────
+    for (const crowd of layout.crowds) {
+      const group = new THREE.Group()
+      group.name = 'scenery:crowd'
+      for (const person of crowd.people) {
+        const mesh = new THREE.Mesh(createSpectatorGeometry({
+          pose: person.pose,
+          hat: person.hat,
+          skin: SKIN_TONES[person.skinIndex]!,
+          hair: HAIR_COLORS[person.hairIndex]!,
+          shirt: SHIRT_COLORS[person.colorIndex]!,
+          trousers: TROUSER_COLORS[person.trousersIndex]!,
+          hatColor: HAT_COLORS[(person.colorIndex + person.hat) % HAT_COLORS.length]!,
+        }), paintedSmooth)
+        mesh.castShadow = true
+        // 로컬 -Z가 강 쪽. 뒷줄(dz가 큰 쪽)은 강에서 멀어진다.
+        mesh.position.set(person.dx, 0, person.dz)
+        mesh.scale.setScalar(person.scale)
+        mesh.userData.phase = person.phase
+        mesh.userData.pose = person.pose
+        group.add(mesh)
+      }
+      if (crowd.banner) {
+        const width = Math.max(4, crowd.people.length * 0.45)
+        group.add(new THREE.Mesh(createBannerGeometry(width), painted))
+      }
+      group.position.set(0, 0.85, crowd.z)
+      group.rotation.y = crowd.side > 0 ? 0 : Math.PI
+      this.courseRoot.add(group)
+      this.crowds.push({
+        obj: group, baseX: crowd.baseX, baseY: 0.85, baseZ: crowd.z,
+        baseYaw: group.rotation.y, span: crowd.span, phase: crowd.phase, animated: true,
       })
     }
 
@@ -1919,6 +2089,32 @@ export class World {
         + Math.max(0, Math.sin(animationTimeSec * 3.2 + node.phase)) * bounce
       node.obj.rotation.z = (node.animated ? Math.sin(animationTimeSec * 2.7 + node.phase) * 0.025 : 0)
         + Math.sin(animationTimeSec * 1.2 + node.phase) * wind * 0.018
+    }
+
+    // 군중: 무리째 반복되고 사람마다 다른 박자로 뛴다
+    for (const node of this.crowds) {
+      const along = wrappedLoopX(node.baseX, distance, node.span, -90)
+      const relative = localPathPoint(
+        this.path, distance, along, node.baseZ, PLAYER_LANE_OFFSET,
+      )
+      const proximity = Math.hypot(relative.x, relative.z)
+      if (proximity < this.nearby.spectator.distance) {
+        this.nearby.spectator.distance = proximity
+        this.nearby.spectator.pan = THREE.MathUtils.clamp(relative.z / 18, -1, 1)
+      }
+      this.placeOnPath(node.obj, distance + along, node.baseZ, node.baseYaw)
+      node.obj.position.y = node.baseY
+      // 지나갈 때만 사람들을 움직인다 — 멀리 있으면 눈에 안 띄고 계산만 든다
+      if (proximity < 90) {
+        for (const person of node.obj.children) {
+          const phase = person.userData.phase as number | undefined
+          if (phase === undefined) continue
+          const pose = person.userData.pose as SpectatorPose
+          const bounce = pose === 'cheer' || pose === 'wave' ? 0.09 : pose === 'clap' ? 0.03 : 0.01
+          person.position.y = Math.max(0, Math.sin(animationTimeSec * 3.4 + phase)) * bounce
+          person.rotation.z = Math.sin(animationTimeSec * 2.6 + phase) * 0.03
+        }
+      }
     }
 
     // 오리와 백조는 물 위를 천천히 헤엄치며 위아래로 떠오른다

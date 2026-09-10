@@ -4,8 +4,12 @@
  * 핵심 문제: FTMS는 초당 1~2회만 데이터를 주는데, 아바타는 60fps로 움직여야 한다.
  * 해법 —
  *   1) strokeRate(spm)로 위상을 매 프레임 굴린다 (외삽)
- *   2) strokeCount가 증가하면 실제로 한 스트로크가 끝난 것이므로 위상을 catch(0)로 리셋한다 (보정)
- * 이렇게 하면 화면은 부드럽고, 실제 노 젓는 타이밍과도 어긋나지 않는다.
+ *   2) strokeCount가 증가하면 실제로 한 스트로크가 끝난 것이므로 위상을 catch(0)로 맞춘다 (보정)
+ *
+ * 보정을 즉시 적용하면(`phase = 0`) 외삽이 조금만 어긋나도 아바타가 뚝 끊긴다.
+ * 예를 들어 리커버리 중(phase 0.85)에 패킷이 오면 노가 순간이동한다.
+ * 그래서 오차를 correction에 담아 두고 몇 프레임에 걸쳐 흡수한다 — 위상이 잠깐
+ * 빨라지거나 느려질 뿐 절대 역행하지 않아서 화면에는 끊김이 보이지 않는다.
  */
 
 export interface Pose {
@@ -23,6 +27,18 @@ export interface Pose {
   phase: number
   /** 드라이브 구간 내 진행도 0~1 (리커버리면 1) */
   driveProgress: number
+  /** 리커버리 구간 내 진행도 0~1 (드라이브면 0) — 호흡·보트 피치 같은 보조 동작에 쓴다 */
+  recoveryProgress: number
+  /**
+   * 블레이드가 물에 잠긴 정도 0~1.
+   * 캐치에서 한 프레임에 꽂히지 않고 드라이브 초반 짧게 내려가고, 피니시 직후 짧게 빠져나온다.
+   */
+  bladeDepth: number
+  /**
+   * 블레이드가 세워진 정도 0~1. 1이면 물을 미는 자세(스퀘어), 0이면 리커버리의 페더링(납작).
+   * 실제 스컬러는 캐치 직전에 세우고 피니시 직후에 눕힌다.
+   */
+  square: number
 }
 
 export class StrokeEngine {
@@ -35,18 +51,40 @@ export class StrokeEngine {
   private targetSpm = 0
   /** 마지막 스트로크 감지 시각 (performance.now 기준 ms) */
   private lastCatchAt = 0
+  /** 아직 흡수하지 못한 위상 오차. update()에서 조금씩 덜어낸다. */
+  private correction = 0
 
-  /** BLE 샘플 도착 시 호출 */
-  onSample(strokeRate: number | undefined, strokeCount: number | undefined, at: number) {
-    if (strokeRate !== undefined && strokeRate > 0) this.targetSpm = strokeRate
+  /** 레이트 0 샘플이 이어지기 시작한 시각 (ms). null이면 지금 0이 아니다 */
+  private zeroRateSince: number | null = null
+
+  /**
+   * BLE 샘플 도착 시 호출.
+   * @param moving 같은 샘플에서 strokeCount나 거리가 늘었는지 — 레이트가 0이어도 아직 젓는 중이다
+   */
+  onSample(strokeRate: number | undefined, strokeCount: number | undefined, at: number, moving = false) {
+    // 거리나 스트로크가 실제로 늘었으면 이전 리커버리에서 시작된 0-rate 타이머는 끝난 것이다.
+    if (moving) this.zeroRateSince = null
+    if (strokeRate !== undefined) {
+      if (strokeRate > 0 && strokeRate <= MAX_SPM) {
+        this.targetSpm = strokeRate
+        this.zeroRateSince = null
+      } else if (strokeRate === 0 && !moving) {
+        // 기기가 레이트 0을 충분히 오래 보고하면 노를 놓은 것이다. 예전엔 무시해서 아바타가 영원히 저었다.
+        // 스트로크 사이에 잠깐 0을 보내는 콘솔이 있어 시간으로 판단한다.
+        this.zeroRateSince ??= at
+        if (at - this.zeroRateSince >= ZERO_RATE_MS) this.targetSpm = 0
+      }
+      // 60spm 넘는 값은 잘못 파싱된 패킷이다 — 무시
+    }
 
     if (strokeCount !== undefined) {
       if (this.lastStrokeCount !== null && strokeCount > this.lastStrokeCount) {
-        // 실제 스트로크 완료 → catch로 리셋.
-        // 여러 스트로크가 한 패킷에 몰려 들어와도 위상은 어차피 0으로 맞추면 된다.
-        this.phase = 0
+        // 실제 스트로크 완료 → 지금 위상이 catch(0)여야 한다.
+        // 위상을 직접 건드리지 않고 오차만 기록해서 update()가 부드럽게 따라잡게 한다.
+        // 여러 스트로크가 한 패킷에 몰려 들어와도 목표는 어차피 catch 하나다.
+        this.correction = catchError(this.phase - STROKE_COUNT_PHASE)
         // 기기가 spm을 안 주는 경우, 스트로크 간격에서 직접 계산
-        if (strokeRate === undefined && this.lastCatchAt > 0) {
+        if ((strokeRate === undefined || (strokeRate === 0 && moving)) && this.lastCatchAt > 0) {
           const dtMin = (at - this.lastCatchAt) / 60000
           if (dtMin > 0.005 && dtMin < 0.2) this.targetSpm = 1 / dtMin
         }
@@ -62,13 +100,41 @@ export class StrokeEngine {
     this.spm += (this.targetSpm - this.spm) * (1 - Math.exp(-dt / 0.5))
 
     if (this.spm > 1) {
-      this.phase += (this.spm / 60) * dt
-      // 다음 패킷에서 어차피 보정되므로 여기선 그냥 wrap
+      const base = (this.spm / 60) * dt
+      let advance = base
+
+      // 쌓인 오차를 조금씩 덜어 위상에 얹는다.
+      if (this.correction !== 0) {
+        let applied = this.correction * (1 - Math.exp(-dt / CORRECTION_TAU))
+        // 아무리 밀려도 기본 속도의 30%로는 계속 나아가고, 아무리 당겨도 3.5배는 넘지 않는다.
+        // 멈추거나 되감기면 그게 바로 눈에 보이는 끊김이다.
+        applied = Math.max(-base * 0.7, Math.min(base * 2.5, applied))
+        this.correction -= applied
+        advance = base + applied
+        if (Math.abs(this.correction) < 1e-4) this.correction = 0
+      }
+
+      this.phase += advance
       if (this.phase >= 1) this.phase -= Math.floor(this.phase)
     } else {
-      // 멈춤: catch 자세로 서서히 복귀
-      this.phase += (0 - this.phase) * (1 - Math.exp(-dt / 0.8))
+      // 멈춤: 젓던 스트로크를 마저 끝내고 캐치에 선다.
+      // 위상을 0으로 되감으면 노와 몸이 거꾸로 움직이는 게 그대로 보인다.
+      const k = 1 - Math.exp(-dt / 0.8)
+      if (this.phase > CATCH_EASE_BACK) {
+        const remaining = 1 - this.phase
+        // 지수 감속만 쓰면 0.99 근처에서 영영 멈춘다. 최소 속도를 두어 캐치에 실제로 도착하게 한다.
+        this.phase += Math.max(remaining * k, Math.min(remaining, STOP_MIN_RATE * dt))
+        if (this.phase >= 0.999) this.phase = 0
+      } else {
+        this.phase += (0 - this.phase) * k
+      }
+      this.correction = 0
     }
+  }
+
+  /** 노를 놓는다 — 지금 스트로크를 마저 끝내고 캐치에 서서 기다린다. 페이스 보트·고스트가 출발 전에 쓴다. */
+  coast() {
+    this.targetSpm = 0
   }
 
   reset() {
@@ -77,6 +143,8 @@ export class StrokeEngine {
     this.targetSpm = 0
     this.lastStrokeCount = null
     this.lastCatchAt = 0
+    this.correction = 0
+    this.zeroRateSince = null
   }
 
   /**
@@ -111,13 +179,70 @@ export class StrokeEngine {
     }
 
     const driveProgress = inWater ? t : 1
+    const recoveryProgress = inWater ? 0 : t
     // 노는 드라이브 동안 캐치각 → 피니시각으로 쓸리고, 리커버리에 되돌아온다
     const oarT = inWater ? easeInOut(t) : 1 - easeInOut(t)
     const oarAngle = lerp(OAR_CATCH, OAR_FINISH, oarT)
 
-    return { slide, bodyAngle, armDraw, oarAngle, inWater, phase: p, driveProgress }
+    // 블레이드: 드라이브 초반 BLADE_ENTRY 동안 내려가고, 리커버리 초반 BLADE_EXIT 동안 올라온다
+    const bladeDepth = inWater
+      ? easeOut(seg(t, 0, BLADE_ENTRY))
+      : 1 - easeIn(seg(t, 0, BLADE_EXIT))
+    // 스퀘어: 리커버리 끝(캐치 직전)에 세우기 시작해 물에 들어갈 땐 다 세워져 있고, 빠져나오며 눕힌다
+    const square = inWater
+      ? 1
+      : t < BLADE_EXIT
+        ? 1 - easeInOut(seg(t, 0, BLADE_EXIT))
+        : easeInOut(seg(t, 1 - SQUARE_UP, 1))
+
+    return {
+      slide, bodyAngle, armDraw, oarAngle, inWater, phase: p,
+      driveProgress, recoveryProgress, bladeDepth, square,
+    }
   }
 }
+
+/**
+ * 위상 오차를 흡수하는 시간 상수 (초).
+ * 짧으면 보정이 튀어 보이고, 길면 노 젓는 타이밍이 실제보다 밀린다.
+ * 0.16초면 가장 빠른 레이스 페이스(약 40spm, 사이클 1.5초)에서도 한 사이클 안에 흡수된다.
+ */
+const CORRECTION_TAU = 0.16
+/**
+ * 이 위상 아래에서 멈추면 캐치로 살짝 되돌아간다.
+ * 그보다 뒤면 한 바퀴 마저 돌아 캐치에 서는 쪽이 자연스럽다.
+ */
+const CATCH_EASE_BACK = 0.25
+/** 멈출 때 캐치까지 마저 가는 최소 속도 (위상/초) */
+const STOP_MIN_RATE = 0.25
+/**
+ * 기기가 strokeCount를 올리는 순간의 사이클 위상. 0 = 캐치.
+ * 콘솔에 따라 드라이브가 끝나는 피니시(driveFraction ≈ 0.3~0.48)에서 세는 것도 있다.
+ * 아바타가 사용자와 반 박자 어긋나 보이면 이 값을 driveFraction 근처로 옮겨 보라.
+ */
+const STROKE_COUNT_PHASE = 0
+/** 레이트 0이 이만큼(ms) 이어지면 멈춘 것으로 본다 — 리커버리(최대 2.5초) 동안 0을 보내는 콘솔 대비 */
+const ZERO_RATE_MS = 2500
+/** 이보다 높은 레이트는 사람이 아니다 — 잘못 파싱된 패킷 */
+const MAX_SPM = 60
+
+/**
+ * 지금 위상에서 캐치(0)까지 가는 데 필요한 위상 변화량.
+ *
+ * 사이클을 거의 다 돈 상태면 앞으로 조금 더 밀고(+), 캐치를 살짝 지났으면 되감는다(-).
+ * 0.25를 경계로 잡아 리커버리 중에 온 패킷이 스트로크를 되감지 않게 한다.
+ */
+export function catchError(phase: number): number {
+  const p = ((phase % 1) + 1) % 1
+  return p <= CATCH_EASE_BACK ? -p : 1 - p
+}
+
+/** 드라이브 중 블레이드가 물에 잠기는 데 쓰는 비율 — 짧지만 한 프레임은 아니다 */
+const BLADE_ENTRY = 0.10
+/** 리커버리 중 블레이드가 빠져나오는 비율 */
+const BLADE_EXIT = 0.10
+/** 리커버리 마지막 이 비율 동안 블레이드를 다시 세운다 */
+const SQUARE_UP = 0.22
 
 /** 캐치에서 상체를 앞으로 숙인 각도 (rad) */
 const CATCH_LEAN = 0.42

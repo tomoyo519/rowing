@@ -95,6 +95,7 @@ export class View {
   /** 지난 최고 기록이 있을 때만 만든다 */
   private ghost: Rig | null = null
   private ghostStroke = new StrokeEngine()
+  private ghostSpeed = 0
   private total: number
   private paceStroke = new StrokeEngine()
   private camShake = 0
@@ -126,7 +127,7 @@ export class View {
     this.player = new Rig(COLORS_PLAYER)
     this.world.scene.add(this.player.group)
 
-    this.pace = new Rig(COLORS_PACE, 0.82)
+    this.pace = new Rig(COLORS_PACE, 0.82, 1.7)
     this.pace.group.position.z = PACE_LANE_Z
     this.world.scene.add(this.pace.group)
     this.paceStroke.onSample(24, undefined, 0)
@@ -134,7 +135,7 @@ export class View {
     this.paceStroke.phase = 0.45
 
     if (session.ghost) {
-      this.ghost = new Rig(COLORS_GHOST, 0.72)
+      this.ghost = new Rig(COLORS_GHOST, 0.72, 3.9)
       this.world.scene.add(this.ghost.group)
       this.ghostStroke.onSample(25, undefined, 0)
       this.ghostStroke.spm = 25
@@ -168,10 +169,15 @@ export class View {
     const turn = turnEffects(this.turnStrength)
     this.player.setCourseAttitude(turn.playerYaw, turn.playerLean)
 
+    // 출발 전(대기)과 종료 후에는 페이스 보트·고스트가 노를 놓고 기다린다.
+    // 사용자가 첫 스트로크를 넣어야 함께 출발한다.
+    const running = session.phase === 'running'
+
     // 페이스 보트는 플레이어와 다른 위상으로 젓는다 — 실루엣이 한 몸처럼 겹치지 않는다
-    this.paceStroke.onSample(paceStrokeRate(m.intensity, session.baseSplit), undefined, timeSec * 1000)
+    if (running) this.paceStroke.onSample(paceStrokeRate(m.intensity, session.baseSplit), undefined, timeSec * 1000)
+    else this.paceStroke.coast()
     this.paceStroke.update(dt)
-    this.pace.apply(this.paceStroke.pose(), dt, splitToSpeed(m.targetSplit))
+    this.pace.apply(this.paceStroke.pose(), dt, running ? m.paceSpeed : 0)
     const pacePoint = localPathPoint(
       this.path,
       m.distance,
@@ -191,15 +197,19 @@ export class View {
     // ── 고스트: 지난 내 최고 기록 ────────────────────────────
     if (this.ghost && m.ghostGap !== null) {
       const ghostSplit = session.ghost!.splitAt(m.elapsed)
-      this.ghostStroke.onSample(
-        paceStrokeRate(isFinite(ghostSplit) && ghostSplit > 0 ? session.baseSplit / ghostSplit : 1),
-        undefined, timeSec * 1000,
-      )
+      if (running) {
+        this.ghostStroke.onSample(
+          paceStrokeRate(isFinite(ghostSplit) && ghostSplit > 0 ? session.baseSplit / ghostSplit : 1),
+          undefined, timeSec * 1000,
+        )
+      } else {
+        this.ghostStroke.coast()
+      }
       this.ghostStroke.update(dt)
-      this.ghost.apply(
-        this.ghostStroke.pose(), dt,
-        isFinite(ghostSplit) ? splitToSpeed(ghostSplit) : 0,
-      )
+      // 기록에서 읽은 스플릿은 초 단위로 계단처럼 바뀐다 — 물결·항적이 튀지 않게 평활한다
+      const ghostTarget = running && isFinite(ghostSplit) ? splitToSpeed(ghostSplit) : 0
+      this.ghostSpeed += (ghostTarget - this.ghostSpeed) * (1 - Math.exp(-dt / 0.9))
+      this.ghost.apply(this.ghostStroke.pose(), dt, this.ghostSpeed)
       const gp = localPathPoint(
         this.path,
         m.distance,

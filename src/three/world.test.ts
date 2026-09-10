@@ -42,6 +42,41 @@ describe('강변 배경 배치', () => {
     expect(layout.sky.some(s => s.kind === 'birds')).toBe(true)
   })
 
+  it('열댓 명이 모인 군중이 가끔 나타나고, 개별 관중보다 훨씬 긴 주기로 되풀이된다', () => {
+    let seenTwo = false
+    let seenBanner = false
+    for (const course of COURSES) {
+      const layout = createSceneryLayout(course.id)
+      expect(layout.crowds.length).toBeGreaterThanOrEqual(1)
+      expect(layout.crowds.length).toBeLessThanOrEqual(2)
+      if (layout.crowds.length === 2) seenTwo = true
+      for (const crowd of layout.crowds) {
+        expect(crowd.people.length).toBeGreaterThanOrEqual(12)
+        expect(crowd.span).toBeGreaterThan(500)
+        expect(Math.abs(crowd.z)).toBeGreaterThan(16)
+        expect(new Set(crowd.people.map(p => p.pose)).size).toBeGreaterThanOrEqual(2)
+        if (crowd.banner) seenBanner = true
+        // 사람들이 한 점에 겹치지 않는다
+        const spots = new Set(crowd.people.map(p => `${p.dx.toFixed(1)}:${p.dz.toFixed(1)}`))
+        expect(spots.size).toBe(crowd.people.length)
+      }
+    }
+    expect(seenTwo).toBe(true)
+    expect(seenBanner).toBe(true)
+  })
+
+  it('나무 수관은 매끈한 구가 아니다 — 정점 반지름이 흩어져 있다', () => {
+    const world = new World(COURSES[0]!)
+    const tree = world.scene.getObjectByName('scenery:tree:oak')!
+    const foliage = tree.getObjectByName('foliage') as THREE.Mesh
+    expect(foliage).toBeDefined()
+    const material = foliage.material as THREE.MeshStandardMaterial
+    expect(material.flatShading).toBe(false)
+    const position = foliage.geometry.getAttribute('position')
+    expect(position.count).toBeGreaterThan(300)
+    world.dispose()
+  })
+
   it('오브젝트를 강둑·물·하늘의 안전한 영역에 놓는다', () => {
     const layout = createSceneryLayout('bosbaan-wave-40')
     for (const item of layout.spectators) {
@@ -128,7 +163,7 @@ describe('강변 배경 배치', () => {
     const world = new World(COURSES[0]!)
     const names = new Set<string>()
     world.scene.traverse(node => { if (node.name) names.add(node.name) })
-    for (const name of ['scenery:balloon', 'scenery:blimp', 'scenery:birds', 'scenery:moon', 'scenery:hills', 'scenery:treeline', 'scenery:swan', 'scenery:bushes']) {
+    for (const name of ['scenery:balloon', 'scenery:blimp', 'scenery:birds', 'scenery:moon', 'scenery:hills', 'scenery:treeline', 'scenery:swan', 'scenery:bushes', 'scenery:crowd']) {
       expect(names.has(name), name).toBe(true)
     }
     const treeKinds = [...names].filter(name => name.startsWith('scenery:tree:'))

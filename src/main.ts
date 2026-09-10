@@ -6,7 +6,7 @@ import {
 } from './game/courses'
 import { profileSamples } from './game/profile'
 import { paceGaugeState } from './game/paceGauge'
-import { Session, type StallReason } from './game/state'
+import { Session, type Phase, type StallReason } from './game/state'
 import { buildFeedback } from './game/feedback'
 import { saveRecord, thinCurve, personalBest, type SessionRecord } from './game/history'
 import { FeedbackModal } from './ui/feedbackModal'
@@ -38,6 +38,8 @@ let view: View | null = null
 let selectedCourse: Course = COURSES[0]!
 let selectedTier: PaceTier = PACE_TIERS[1]!
 let wakeLock: WakeLockSentinel | null = null
+/** 늦게 끝난 화면 잠금 요청이 종료된 레이스의 잠금을 되살리지 않게 하는 세대 번호 */
+let wakeLockGeneration = 0
 
 // Bluetooth 진단은 화면을 이동해도 남아 있어, 나중에 복사해서 확인할 수 있다.
 const bleLog: BleDiagnosticEntry[] = []
@@ -357,6 +359,8 @@ let lastStepLabel: string | null = null
 let lastStallReason: StallReason = null
 /** 구간 전환이 강해지는 방향인지 판단하기 위한 직전 강도 */
 let lastStepIntensity = 1
+/** 출발 대기 → 출발 전환을 잡기 위한 직전 세션 상태 */
+let lastPhase: Phase | null = null
 
 window.addEventListener('resize', () => view?.resize())
 window.addEventListener('orientationchange', () => setTimeout(() => view?.resize(), 150))
@@ -399,23 +403,81 @@ async function startRace() {
   view = new View(cv, session)
   view.resize()
   if (import.meta.env.DEV) (window as unknown as { __rowing: unknown }).__rowing = { session, view }
-  await requestWakeLock()
 
+  // 화면 잠금 요청이 늦게 끝나는 동안에도 ✕로 나갈 수 있다. await 전에 이 세션을 잡아 둬야
+  // 종료된 화면 위에 카운트다운을 띄우거나 null 세션을 건드리지 않는다.
+  const mine = session
+  const generation = ++countdownGeneration
+  const cancelled = () => session !== mine || mine.phase === 'finished' || generation !== countdownGeneration
+  await requestWakeLock()
+  if (cancelled()) return
+
+  // 카운트다운 중에 ✕로 나가거나 다른 코스를 다시 시작할 수 있다 — 그 세션은 여기서 건드리면 안 된다
+  await runCountdown(generation)
+  if (cancelled()) return
+  // 카운트다운이 끝나도 사용자가 젓기 전엔 아무도 출발하지 않는다
+  mine.arm()
+  lastPhase = mine.phase
+  // 이미 젓는 중이라 바로 출발했다면 오버레이가 "노를 저으면"이라고 우기면 안 된다
+  if (mine.phase === 'running') $('cd-sub').textContent = ''
+}
+
+/**
+ * 시작 카운트다운.
+ *
+ * 화면이 뜨자마자 숫자가 넘어가면 손잡이 잡을 틈이 없다. '준비'를 먼저 잠깐 보여준 뒤
+ * 3·2·1을 각각 1초씩 세고, '시작'이 뜨는 순간 세션이 시작된다.
+ * '시작' 글자는 세션을 막지 않고 잠깐 남았다가 사라진다.
+ */
+const COUNTDOWN_READY_MS = 1100
+const COUNTDOWN_STEP_MS = 1000
+const COUNTDOWN_GO_MS = 550
+/** 진행 중인 카운트다운의 세대. 새 카운트다운이 시작되거나 운동이 끝나면 올라가고, 옛 것은 멈춘다. */
+let countdownGeneration = 0
+/** 오버레이가 떠 있는 동안엔 출발 안내를 겹쳐 띄우지 않는다 */
+let countdownVisible = false
+
+function hideCountdown() {
+  countdownVisible = false
+  $('countdown').style.display = 'none'
+}
+
+async function runCountdown(generation: number) {
   const cd = $('countdown')
-  cd.style.display = 'flex'
-  for (const n of ['3', '2', '1', 'ROW']) {
-    cd.textContent = n
-    if (n === 'ROW') cues.go()
-    else cues.countdown()
-    await sleep(700)
+  const num = $('cd-num')
+  const sub = $('cd-sub')
+  const show = (text: string, hint: string, ready = false) => {
+    num.textContent = text
+    sub.textContent = hint
+    cd.classList.toggle('ready', ready)
+    // 애니메이션을 숫자마다 처음부터 다시 돌린다
+    num.classList.remove('pop')
+    void num.offsetWidth
+    num.classList.add('pop')
   }
-  cd.style.display = 'none'
-  session.start()
+  const alive = () => generation === countdownGeneration
+  countdownVisible = true
+  cd.style.display = 'flex'
+  show('준비', '손잡이를 잡고 캐치 자세로', true)
+  await sleep(COUNTDOWN_READY_MS)
+  for (const n of ['3', '2', '1']) {
+    if (!alive()) return
+    show(n, '')
+    cues.countdown()
+    await sleep(COUNTDOWN_STEP_MS)
+  }
+  if (!alive()) return
+  show('시작', '노를 저으면 출발합니다')
+  cues.go()
+  setTimeout(() => { if (alive()) hideCountdown() }, COUNTDOWN_GO_MS)
 }
 
 $('btn-quit').addEventListener('click', () => {
   metronome.stop()
   ambience.stop()
+  // 카운트다운 중이었다면 남은 숫자와 '시작' 소리를 끊는다
+  countdownGeneration++
+  hideCountdown()
   session?.finish()
   showSummary()
 })
@@ -606,7 +668,28 @@ function updateHud() {
   if (!session || !view) return
   const m = session.metrics()
 
-  $('s-split').textContent = formatSplitShort(m.split)
+  // 출발 대기: 첫 스트로크를 기다리는 동안 안내를 띄우고, 들어오는 순간 소리로 알린다
+  const waiting = session.waitingForStroke
+  const hint = $('start-hint')
+  // 오버레이의 '시작' 글자가 사라진 뒤에 띄운다 — 같은 문장이 두 겹으로 보이면 안 된다
+  hint.hidden = !waiting || countdownVisible
+  if (waiting) {
+    // 대기 중 연결이 끊겼거나 데이터가 안 오면 "노를 저으라"고만 하면 안 된다 — 죽은 연결에 대고 젓게 된다
+    const [title, sub] = m.stallReason === 'link'
+      ? ['연결이 끊어졌습니다', '다시 연결되면 노를 저어 출발하세요']
+      : m.stallReason === 'nodata'
+        ? ['로잉머신 데이터가 오지 않습니다', '콘솔을 깨우고 손잡이를 당겨보세요 · 계속 안 되면 연결 화면에서 다시 연결하세요']
+        : ['노를 저으면 출발합니다', '페이스 보트가 옆에서 기다리는 중']
+    hint.querySelector('b')!.textContent = title
+    hint.querySelector('span')!.textContent = sub
+  }
+  if (lastPhase === 'armed' && session.phase === 'running') cues.launch()
+  lastPhase = session.phase
+
+  const splitText = formatSplitShort(m.split)
+  $('s-split').textContent = splitText
+  // 값이 없을 땐 왜 없는지 알려준다 — '--:--'만 덩그러니 있으면 고장난 것처럼 보인다
+  $('dial-u').textContent = splitText === '--:--' ? '노를 저으면 표시됩니다' : '500m당 시간'
   $('s-target').textContent = formatSplitShort(m.targetSplit)
   $('s-dist').textContent = String(Math.round(m.distance))
   $('s-time').textContent = formatClock(m.elapsed)
@@ -616,9 +699,10 @@ function updateHud() {
   $('s-pow').textContent = String(Math.round(m.power))
   $('s-remaining').textContent = `${formatClock(m.remaining)} 남음`
 
-  // 목표 대비 얼마나 벗어났는지 색으로
+  // 목표 대비 얼마나 벗어났는지 색으로. 값이 없으면 색도 없다 — 빨간 '--:--'는 고장처럼 보인다.
   const off = m.split - m.targetSplit
-  $('s-split').className = 'v ' + (off < -1.5 ? 'fast' : off > 1.5 ? 'slow' : '')
+  const tone = splitText === '--:--' ? '' : off < -1.5 ? 'fast' : off > 1.5 ? 'slow' : ''
+  $('s-split').className = 'v ' + tone
   updatePaceGauge(m.split, m.targetSplit, m.gap)
   $('pace-dial').style.setProperty('--dial-fill', `${Math.max(8, session.stroke.phase * 270)}deg`)
 
@@ -805,9 +889,22 @@ $('btn-again').addEventListener('click', () => goCourseSelect())
 
 // ── 화면 꺼짐 방지 ──────────────────────────────────────────
 async function requestWakeLock() {
-  try { wakeLock = await navigator.wakeLock?.request('screen') ?? null } catch { /* 미지원 */ }
+  const generation = ++wakeLockGeneration
+  try {
+    const acquired = await navigator.wakeLock?.request('screen') ?? null
+    if (generation !== wakeLockGeneration) {
+      await acquired?.release().catch(() => {})
+      return null
+    }
+    wakeLock = acquired
+    return acquired
+  } catch {
+    return null // 미지원 또는 권한 거부
+  }
 }
 function releaseWakeLock() {
+  // 아직 pending인 request도 무효화한다. 나중에 resolve되면 requestWakeLock이 곧바로 해제한다.
+  wakeLockGeneration++
   wakeLock?.release().catch(() => {})
   wakeLock = null
 }
