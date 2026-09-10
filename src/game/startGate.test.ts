@@ -217,6 +217,30 @@ describe('출발 대기 (armed)', () => {
     expect(s.phase).toBe('running')
   })
 
+  it('분할 알림의 0W 뒤에 붙든 페이스가 와도 새 스트로크로 오판하지 않는다', () => {
+    const s = new Session(course, 145)
+    s.onSample({ at: -1000, instantaneousPace: 145 })
+    s.arm()
+
+    s.onSample({ at: 0, instantaneousPower: 0 })
+    s.onSample({ at: 100, instantaneousPace: 145 })
+
+    expect(s.phase).toBe('armed')
+    expect(s.elapsed).toBe(0)
+  })
+
+  it('속도만 주는 기기는 충분히 긴 0 뒤 같은 페이스로 돌아와도 출발한다', () => {
+    const s = new Session(course, 145)
+    s.onSample({ at: -1000, instantaneousPace: 145 })
+    s.arm()
+
+    s.onSample({ at: 0, instantaneousPower: 0 })
+    s.onSample({ at: STOP_AFTER_ZERO_MS + 100, instantaneousPower: 0 })
+    s.onSample({ at: STOP_AFTER_ZERO_MS + 200, instantaneousPace: 145 })
+
+    expect(s.phase).toBe('running')
+  })
+
   it('대기 중 연결이 끊기면 바로 알리고, 데이터 없음은 한참 뒤에야 알린다', () => {
     const s = new Session(course, 145)
     s.arm()

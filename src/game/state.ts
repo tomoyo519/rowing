@@ -370,7 +370,10 @@ export class Session {
     } else {
       this.boat.onSample(s.totalDistance ?? null, speed)
     }
-    this.lastReportedSpeed = reported !== null ? reported : this.reportsZero(s) ? 0 : this.lastReportedSpeed
+    // 한 번의 0 패킷만으로 기준 속도를 0으로 낮추면, 분할 알림에서 `power: 0` 뒤에
+    // 붙들린 pace 패킷이 오는 것만으로도 새 가속으로 오판한다. 충분히 오래 0이 이어져
+    // 실제 정지로 확정됐을 때만 0을 기준으로 삼는다.
+    this.lastReportedSpeed = reported !== null ? reported : explicitlyStopped ? 0 : this.lastReportedSpeed
   }
 
   update(dt: number) {
