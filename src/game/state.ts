@@ -365,6 +365,8 @@ export class Session {
         this.boat.onSample(s.totalDistance ?? null, speed)
       } else {
         // 대기 중엔 보트를 출발선에 붙들어 둔다 — 관성으로 도는 플라이휠 때문에 풍경이 흐르면 안 된다
+        // 콘솔이 마지막 strokeRate를 붙들고 있어도 아바타가 혼자 계속 젓지 않게 함께 멈춘다.
+        this.stroke.coast()
         this.boat.onSample(null, 0)
       }
     } else {

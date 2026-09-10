@@ -98,6 +98,7 @@ describe('출발 대기 (armed)', () => {
     for (let at = 7500; at <= 9500; at += 500) { s.onSample(rowing({ at, strokeCount: 12 })); run(s, 0.5) }
     expect(s.phase).toBe('armed')
     expect(s.elapsed).toBe(0)
+    expect(s.stroke.spm).toBeLessThan(0.5)
     // 진짜 새 스트로크
     s.onSample(rowing({ at: 10000, strokeCount: 13, totalDistance: 104 }))
     expect(s.phase).toBe('running')
