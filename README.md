@@ -31,6 +31,20 @@ npm run tunnel           # 터미널 2 → https://xxx.trycloudflare.com
 `cloudflared`가 없으면 `brew install cloudflared` (또는 `ngrok http 5173`).
 나온 HTTPS 주소를 iPad의 Bluefy에서 열면 됩니다. 핫 리로드도 그대로 동작합니다.
 
+## 배포 전 미리 돌려보기
+
+개발 서버(HMR)는 실제 배포본과 번들·캐시 동작이 다르므로, 배포 직전에는 빌드 결과를 그대로 띄워서 확인합니다.
+
+```bash
+npm test                 # 단위 테스트
+npm run build            # dist/client 생성 (타입체크 포함)
+npm run preview          # 터미널 1 → http://localhost:4180 (시뮬레이터로 둘러보기)
+npm run preview:tunnel   # 터미널 2 → https://xxx.trycloudflare.com (iPad Bluefy + 실기기)
+```
+
+터널 주소를 iPad의 Bluefy에서 열면 배포된 것과 같은 번들로 실기기 연결까지 확인할 수 있습니다.
+문제가 없으면 그때 배포합니다.
+
 > 앱스토어 배포까지 갈 거라면 Capacitor로 감싸고 `@capacitor-community/bluetooth-le`로
 > 갈아타면 됩니다. 게임 코드는 그대로 재사용됩니다.
 > 이때 `Info.plist`에 `NSBluetoothAlwaysUsageDescription`을 반드시 넣어야 합니다.
@@ -269,8 +283,11 @@ FTMS는 표준이지만 **기기마다 보내는 필드가 다릅니다.** 처�
 | `npm run dev` | 개발 서버 (LAN 노출) |
 | `npm run tunnel` | HTTPS 터널 — iPad 실기기 테스트용 |
 | `npm test` | 파서 · 프로파일 · 리그 관절 테스트 |
-| `npm run build` | 타입체크 + 프로덕션 빌드 |
+| `npm run build` | 타입체크 + 프로덕션 빌드 (`dist/`) |
+| `npm run preview` | 빌드 결과를 그대로 띄움 (포트 4180, LAN 노출) — 배포 전 최종 확인용 |
+| `npm run preview:tunnel` | preview 서버 HTTPS 터널 — iPad·실기기로 배포 전 확인 |
 | `npm run shot` | 3D 화면 스크린샷 (`shots/`) — 아바타 손볼 때 눈으로 확인용 |
+| `npm run shot:rig` | 아바타 클로즈업 한 장 (`tools/rigshot.mjs` 인자로 카메라·위상 조절) |
 
 > `npm run shot`은 Playwright가 필요해 **Node 20 이상**에서 실행해야 합니다.
 > `npm run dev`를 띄운 상태에서 별도 터미널에서 돌리세요.

@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   Session, STOP_AFTER_ZERO_MS, STAGNANT_DISTANCE_MS, ARMED_QUIET_AFTER, RECENT_STROKE_MS,
 } from './state'
-import { COURSES } from './courses'
+import { COURSES, type Course } from './courses'
+import { meanIntensityBetween } from './profile'
 import { GhostTrack } from './ghost'
 import type { SessionRecord } from './history'
 import type { RowerSample } from '../types'
@@ -150,8 +151,10 @@ describe('출발 대기 (armed)', () => {
     expect(s.phase).toBe('running')
     run(s, 1)
     expect(s.metrics().speed).toBeGreaterThan(1.5)
-    // 같은 관성으로 출발해 첫 샘플이 잠시 늦어도 페이스 보트에 1m 넘게 뒤처지지 않는다.
-    expect(Math.abs(s.metrics().gap)).toBeLessThan(0.6)
+    // 페이스 보트는 곧바로 목표 속도로 나가므로 첫 샘플이 잠시 늦으면 조금 뒤처진다.
+    // 다만 관성 손실(τ·v ≈ 3m)을 넘겨서는 안 된다.
+    expect(s.metrics().gap).toBeLessThan(0)
+    expect(s.metrics().gap).toBeGreaterThan(-2.5)
   })
 
   it('시험 삼아 한 번 당긴 것으로는 arm 즉시 출발하지 않는다', () => {
@@ -263,17 +266,16 @@ describe('출발 대기 (armed)', () => {
     expect(s.stallReason).toBe(null)
   })
 
-  it('페이스 보트는 출발선에서 나와 같은 관성으로 가속한다', () => {
+  it('페이스 보트는 출발선에서 곧바로 목표 속도로 나간다', () => {
     const s = new Session(course, 145)
     s.arm()
     s.onSample(idle({ at: 0 }))
     s.onSample(rowing({ at: 500, strokeCount: 11, totalDistance: 100 }))
     expect(s.phase).toBe('running')
+    expect(s.metrics().paceSpeed).toBeCloseTo(500 / 145, 2)
     run(s, 1)
-    // 한 프레임에 전속력(3.45 m/s)이었다면 1초 뒤 3.4m 앞서 있어야 한다
-    expect(s.paceDistance).toBeLessThan(2.5)
-    expect(s.metrics().paceSpeed).toBeGreaterThan(1.5)
-    expect(s.metrics().paceSpeed).toBeLessThan(3.4)
+    // 0에서 관성으로 가속했다면 1초 뒤 2.5m도 못 갔을 것이다
+    expect(s.paceDistance).toBeCloseTo(500 / 145, 1)
     run(s, 4)
     expect(s.metrics().paceSpeed).toBeCloseTo(500 / 145, 1)
   })
@@ -466,16 +468,93 @@ describe('노를 놓으면 배가 멈춘다', () => {
     expect(minSpm).toBeGreaterThan(20 * 0.8)
   })
 
-  it('페이스·파워 필드를 아예 안 보내는 기기는 마지막 속도를 유지한다', () => {
+  it('페이스·파워 필드를 아예 안 보내는 기기는 거리 증가분으로 속도를 구한다', () => {
     const s = new Session(course, 145)
     s.start()
     const { at, count, dist } = rowFor(s, 4)
     const before = s.boat.speed
-    for (let i = 0; i < 5; i++) {
+    // 0.5초마다 2m — 4 m/s로 젓고 있다. 옛 속도(3.4)를 붙들면 스플릿·게이지가 실제와 어긋난다.
+    for (let i = 0; i < 9; i++) {
       s.onSample({ at: at + i * 500, strokeRate: 26, strokeCount: count + i, totalDistance: dist + i * 2 })
+      run(s, 0.5)
     }
-    run(s, 1)
-    expect(s.boat.speed).toBeCloseTo(before, 1)
+    expect(s.boat.speed).toBeGreaterThan(before)
+    expect(s.boat.speed).toBeCloseTo(4, 1)
+    expect(Math.abs(s.metrics().split - 125)).toBeLessThan(3)
+  })
+
+  it('처음부터 거리만 주는 기기도 스플릿과 게이지가 비지 않는다', () => {
+    const s = new Session(course, 145)
+    s.start()
+    for (let i = 0; i < 12; i++) {
+      s.onSample({ at: i * 500, strokeRate: 24, strokeCount: 10 + (i >> 1), totalDistance: 100 + i * 1.8 })
+      run(s, 0.5)
+    }
+    expect(s.boat.speed).toBeGreaterThan(3)
+    expect(isFinite(s.metrics().split)).toBe(true)
+    expect(s.metrics().split).toBeLessThan(600)
+  })
+
+  it('5Hz 근처에서 199ms 지터가 있는 거리-only 기기도 속도를 구한다', () => {
+    const s = new Session(course, 145)
+    s.start()
+    let at = 0
+    for (let i = 0; i < 30; i++) {
+      s.onSample({ at, strokeRate: 30, strokeCount: 10 + (i >> 3), totalDistance: 100 + i })
+      const interval = i % 2 === 0 ? 199 : 201
+      run(s, interval / 1000)
+      at += interval
+    }
+    expect(s.metrics().speed).toBeCloseTo(5, 1)
+    expect(s.metrics().split).toBeCloseTo(100, 0)
+  })
+
+  it('분할 알림에서 심박 필드가 빠져도 마지막 값을 유지한다', () => {
+    const s = new Session(course, 145)
+    s.start()
+    s.onSample(rowing({ at: 0, heartRate: 151 }))
+    expect(s.metrics().heartRate).toBe(151)
+    s.onSample({ at: 500, strokeRate: 26, strokeCount: 11, totalDistance: 102 })
+    expect(s.metrics().heartRate).toBe(151)
+    s.onSample({ at: 10_501, strokeRate: 26, strokeCount: 12, totalDistance: 104 })
+    expect(s.metrics().heartRate).toBeUndefined()
+  })
+
+  it('구간 경계선은 페이스 보트가 구간을 넘는 자리에 놓인다', () => {
+    const interval: Course = {
+      ...course,
+      profile: { kind: 'intervals', pattern: [{ sec: 60, intensity: 1.0, label: 'A' }, { sec: 60, intensity: 1.1, label: 'B' }] },
+    }
+    const s = new Session(interval, 145)
+    s.start()
+    rowFor(s, 10)
+    const m = s.metrics()
+    expect(m.nextStep?.label).toBe('B')
+    expect(m.nextTargetSplit).toBeCloseTo(145 / 1.1, 3)
+    // 남은 50초 × 목표 속도만큼 페이스 보트 앞에 있고, 내 보트 기준으로는 거기서 gap을 뺀 만큼
+    expect(m.boundaryAlong).toBeCloseTo(s.paceDistance + (500 / 145) * m.step.remaining! - m.distance, 3)
+    expect(m.boundaryAlong!).toBeGreaterThan(150)
+  })
+
+  it('전환 램프 중에도 구간 경계선은 남은 목표 강도의 평균으로 고정한다', () => {
+    const interval: Course = {
+      ...course,
+      profile: {
+        kind: 'intervals',
+        pattern: [{ sec: 180, intensity: 1.1, label: '푸시' }, { sec: 120, intensity: 0.9, label: '회복' }],
+      },
+    }
+    const s = new Session(interval, 145)
+    s.start()
+    rowFor(s, 185)
+    const m = s.metrics()
+    const remaining = m.step.remaining!
+    const mean = meanIntensityBetween(interval.profile, s.elapsed, s.elapsed + remaining)
+    const expected = s.paceDistance + (500 / 145) * mean * remaining - m.distance
+    expect(m.boundaryAlong).toBeCloseTo(expected, 3)
+    // 현재 순간의 강도를 남은 115초 전체에 곱하던 옛 계산은 경계선을 수십 m 앞에 놓았다.
+    const oldProjection = s.paceDistance + (500 / 145) * m.intensity * remaining - m.distance
+    expect(oldProjection - m.boundaryAlong!).toBeGreaterThan(30)
   })
 
   it('스트로크 레이트가 없는 기기도 거리가 멈추면 기본 시간 뒤에 멈춘다', () => {

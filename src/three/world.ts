@@ -245,6 +245,7 @@ function pickWeighted<T extends string>(random: () => number, weights: Record<T,
   for (const [, w] of entries) total += w
   let roll = random() * total
   for (const [kind, w] of entries) {
+    if (w <= 0) continue   // 가중치 0인 종류는 절대 뽑히지 않는다
     roll -= w
     if (roll <= 0) return kind
   }
@@ -288,8 +289,9 @@ export function createSceneryLayout(courseId: string): SceneryLayout {
 
   // 나무: 간격을 흩뜨리고 군락과 빈터가 번갈아 나오게 한다.
   let cursor = 0
+  // 버드나무는 배치하지 않는다 — 늘어진 가지가 어느 각도에서는 이상한 덩어리로 보여 사용자가 빼 달라고 했다.
   const treeWeights: Record<TreeKind, number> = {
-    oak: 0.26, birch: 0.15, pine: 0.17, poplar: 0.14, willow: 0.12, maple: 0.16,
+    oak: 0.30, birch: 0.17, pine: 0.19, poplar: 0.16, willow: 0, maple: 0.18,
   }
   const leafFor: Record<TreeKind, number[]> = {
     oak: [0, 1, 2], birch: [3], pine: [4], poplar: [1, 3], willow: [5], maple: [0, 2],
@@ -588,8 +590,9 @@ function createTree(
         const a = (i / 12) * Math.PI * 2 + phase
         const r = 2.0 + Math.sin(a * 3) * 0.25
         const droop = 2.4 + Math.sin(a * 2 + phase) * 0.4
-        const frond = new THREE.CylinderGeometry(0.06, 0.22, droop, 6)
-        frond.translate(Math.cos(a) * r, 3.3 - droop / 2, Math.sin(a) * r)
+        // 가지에 붙은 쪽이 굵고 끝이 가늘어야 늘어진 가지다. 반대로 두면 땅에 꽂힌 원뿔 무더기로 보인다.
+        const frond = new THREE.CylinderGeometry(0.2, 0.035, droop, 6)
+        frond.translate(Math.cos(a) * r, 3.4 - droop / 2, Math.sin(a) * r)
         leafParts.push(frond)
       }
       break
@@ -1207,6 +1210,8 @@ export class World {
   private bushSpan = 1
   private landmarkGroup = new THREE.Group()
   private landmarkNodes: LandmarkNode[] = []
+  /** 구간 경계선 — 페이스 보트가 다음 구간으로 넘어가는 자리에 강을 가로질러 그린다 */
+  private boundaryLine = new THREE.Group()
   /** 매 프레임 회전시킬 부품 (풍차 날개 등) */
   private spinners: THREE.Object3D[] = []
   private course: Course
@@ -1318,6 +1323,7 @@ export class World {
     // ── 랜드마크 ────────────────────────────────────────────
     this.courseRoot.add(this.landmarkGroup)
     this.buildLandmarks()
+    this.buildBoundaryLine()
 
     // ── 날씨: 코스 구간마다 하나 ───────────────────────────
     const sections = profileSections(course.profile, course.durationSec)
@@ -1641,6 +1647,8 @@ export class World {
     const gateMat = new THREE.MeshStandardMaterial({ color: '#3b2f26', flatShading: true, roughness: 0.9 })
     const sailMat = new THREE.MeshStandardMaterial({ color: '#e8e2d4', flatShading: true, roughness: 0.85 })
     const windowMat = new THREE.MeshStandardMaterial({ color: '#294c62', roughness: 0.28 })
+    const trunkMat = new THREE.MeshStandardMaterial({ color: TRUNK_COLOR, flatShading: false, roughness: 0.95 })
+    const birchMat = new THREE.MeshStandardMaterial({ color: BIRCH_COLOR, flatShading: false, roughness: 0.8 })
     const random = seededRandom(`${this.course.id}:landmarks`)
 
     for (const lm of this.course.venue.landmarks) {
@@ -1964,14 +1972,17 @@ export class World {
           break
         }
         case 'trees': {
-          const leafParts: THREE.BufferGeometry[] = []
-          for (let i = 0; i < 7; i++) {
-            const h = 5 + ((i * 41) % 30) / 10
-            const cone = new THREE.ConeGeometry(h * 0.34, h, 6)
-            cone.translate(((i * 29) % 18) - 9, h / 2, BANK_Z + 3 + ((i * 17) % 60) / 10)
-            leafParts.push(cone)
+          // 물가 숲: 줄기 없는 원뿔 무더기가 아니라 강변 나무와 같은 모델을 촘촘히 심는다.
+          const kinds: TreeKind[] = ['pine', 'oak', 'pine', 'maple', 'pine', 'oak', 'birch']
+          for (let i = 0; i < kinds.length; i++) {
+            const kind = kinds[i]!
+            const leaf = kind === 'pine' ? 4 : kind === 'birch' ? 3 : (i % 2 === 0 ? 0 : 2)
+            const tree = createTree(kind, this.foliage[leaf]!.material, trunkMat, birchMat, random() * Math.PI * 2)
+            tree.position.set(-11 + i * 3.6 + (random() - 0.5) * 1.6, 0.7, BANK_Z + 2.5 + random() * 6)
+            tree.scale.setScalar(0.85 + random() * 0.4)
+            tree.rotation.y = random() * Math.PI * 2
+            g.add(tree)
           }
-          g.add(new THREE.Mesh(mergePlain(leafParts), this.foliage[4]!.material))
           break
         }
         case 'buoy': {
@@ -1995,6 +2006,45 @@ export class World {
         baseYaw: g.rotation.y,
       })
     }
+  }
+
+  private buildBoundaryLine() {
+    const g = this.boundaryLine
+    const stripeMat = new THREE.MeshBasicMaterial({
+      color: '#ffffff', transparent: true, opacity: 0.55, depthWrite: false,
+    })
+    // 강을 가로지르는 띠. 로컬 X가 진행 방향이므로 X로 얇고 Z로 길다.
+    const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.9, BANK_Z * 2 + 2), stripeMat)
+    stripe.rotation.x = -Math.PI / 2
+    stripe.position.y = 0.05
+    g.add(stripe)
+    // 양쪽 물가의 깃대 — 멀리서도 선이 어디인지 보인다
+    const poleMat = new THREE.MeshStandardMaterial({ color: '#f4f6f8', roughness: 0.6 })
+    const flagMat = new THREE.MeshStandardMaterial({ color: '#ff9f43', roughness: 0.7, side: THREE.DoubleSide })
+    for (const side of [1, -1]) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 3.4, 6), poleMat)
+      pole.position.set(0, 0.7 + 1.7, side * (BANK_Z + 0.9))
+      const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.6), flagMat)
+      flag.position.set(0.55, 0.7 + 3.1, side * (BANK_Z + 0.9))
+      g.add(pole, flag)
+    }
+    g.name = 'segment:boundary'
+    g.visible = false
+    this.courseRoot.add(g)
+  }
+
+  /**
+   * 구간 경계선을 플레이어 기준 along(m) 앞에 둔다. null이면 숨긴다.
+   * 안개 너머(400m)나 이미 한참 지난 자리는 그리지 않는다.
+   */
+  setSegmentBoundary(distance: number, along: number | null) {
+    const g = this.boundaryLine
+    if (along === null || along > 400 || along < -40) {
+      g.visible = false
+      return
+    }
+    g.visible = true
+    this.placeOnPath(g, distance + along, 0, 0)
   }
 
   private placeOnPath(obj: THREE.Object3D, station: number, lateral: number, baseYaw: number) {

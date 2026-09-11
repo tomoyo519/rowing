@@ -205,8 +205,8 @@
   .hud { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
   .hud-top {
     position: absolute; top: calc(var(--safe-t) + 13px); left: 50%;
-    width: min(64vw, 660px); transform: translateX(-50%);
-    display: grid; grid-template-columns: repeat(4, minmax(78px, 1fr));
+    width: min(72vw, 800px); transform: translateX(-50%);
+    display: grid; grid-template-columns: repeat(5, minmax(78px, 1fr));
     gap: clamp(18px, 4vw, 54px);
   }
   .stat { min-width: 0; padding: 0; text-align: center; text-shadow: 0 2px 13px rgba(0,0,0,.82); }
@@ -256,18 +256,26 @@
     grid-column: 1 / -1; color: rgba(255,255,255,.61); font-size: 9.5px;
     font-weight: 750; letter-spacing: .11em;
   }
-  .segment .seg-label { font-size: 16px; font-weight: 750; }
-  .segment .seg-rem { font-size: 13px; color: rgba(255,255,255,.68); font-variant-numeric: tabular-nums; }
-  .segment .seg-rem:empty { display: none; }
+  .segment .seg-label, .target-panel .seg-label { font-size: 16px; font-weight: 750; }
+  .segment .seg-rem, .target-panel .seg-rem { font-size: 13px; color: rgba(255,255,255,.68); font-variant-numeric: tabular-nums; }
+  .segment .seg-rem:empty, .target-panel .seg-rem:empty { display: none; }
+  .segment .target-main { grid-column: 1 / -1; }
 
   .target-panel {
     padding: 11px 14px; background: rgba(7,14,21,.54); backdrop-filter: blur(7px);
     -webkit-backdrop-filter: blur(7px); border: 1px solid rgba(255,255,255,.10);
     border-left: 4px solid #3ebee4; border-radius: 8px;
   }
-  .target-panel .panel-k { display: block; }
+  .target-panel {
+    display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 4px 10px;
+    border-left-color: rgba(255,255,255,.35);
+  }
+  .target-panel.hard { border-left-color: #ff6252; }
+  .target-panel.easy { border-left-color: #4bc67a; }
+  .target-panel .target-main, .target-panel .target-meta, .target-panel .ghost-gap { grid-column: 1 / -1; }
   .target-main { margin-top: 4px; display: flex; align-items: baseline; }
   .target-main strong { font-size: 31px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .target-main.next strong { font-size: 24px; color: rgba(255,255,255,.88); }
   .target-unit { margin-left: 4px; color: rgba(255,255,255,.6); font-size: 11px; }
   .target-meta {
     display: flex; justify-content: space-between; gap: 8px; margin-top: 8px;
@@ -500,10 +508,19 @@
   }
   .ble-race-alert.on { display: block; }
 
+  /* 우측 레이스 버튼 3개의 자리를 비워 작은 태블릿·휴대폰 가로 화면에서 심박과 겹치지 않게 한다. */
+  @media (orientation: landscape) and (max-width: 1140px) {
+    .hud-top {
+      left: 16px; right: 176px; width: auto; transform: none;
+      grid-template-columns: repeat(5, minmax(54px, 1fr)); gap: clamp(8px, 1.5vw, 18px);
+    }
+    .hud-top .stat .k { font-size: 9px; letter-spacing: .08em; }
+  }
+
   @media (orientation: portrait) {
     .hud-top {
       top: calc(var(--safe-t) + 12px); left: 14px; right: 106px; width: auto;
-      transform: none; grid-template-columns: repeat(2, minmax(82px, 1fr)); gap: 12px 18px;
+      transform: none; grid-template-columns: repeat(3, minmax(82px, 1fr)); gap: 12px 18px;
     }
     .hud-top .stat .v { font-size: 20px; }
     .course-strip { top: calc(var(--safe-t) + 112px); left: 15px; right: 15px; }
@@ -666,6 +683,7 @@
       <div class="stat"><div class="k">DISTANCE</div><div class="v"><span id="s-dist">0</span><span class="u">m</span></div></div>
       <div class="stat"><div class="k">SPEED</div><div class="v"><span id="s-speed">0.0</span><span class="u">km/h</span></div></div>
       <div class="stat"><div class="k">CALORIES</div><div class="v"><span id="s-calories">0</span><span class="u">kcal</span></div></div>
+      <div class="stat"><div class="k">HEART RATE</div><div class="v"><span id="s-hr">—</span><span class="u">bpm</span></div></div>
     </div>
 
     <div class="course-strip">
@@ -677,10 +695,12 @@
       <div class="segment" id="segment">
         <span class="panel-k">CURRENT</span>
         <strong class="seg-label">—</strong><span class="seg-rem"></span>
-      </div>
-      <div class="target-panel">
-        <span class="panel-k">TARGET</span>
         <div class="target-main"><strong id="s-target">--:--</strong><span class="target-unit">/500m</span></div>
+      </div>
+      <div class="target-panel" id="next-panel">
+        <span class="panel-k">NEXT</span>
+        <strong class="seg-label" id="s-next-label">—</strong><span class="seg-rem" id="s-next-in"></span>
+        <div class="target-main next"><strong id="s-next-target">--:--</strong><span class="target-unit">/500m</span></div>
         <div class="target-meta">
           <span id="s-remaining">00:00 남음</span>
           <span class="g" id="s-gap">0m</span>

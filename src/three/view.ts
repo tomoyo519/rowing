@@ -226,6 +226,7 @@ export class View {
     }
 
     this.world.update(timeSec, m.elapsed, m.distance, this.total, 0)
+    this.world.setSegmentBoundary(m.distance, running ? m.boundaryAlong : null)
 
     // ── 카메라 ──────────────────────────────────────────────
     // 드라이브에 맞춰 아주 약간 밀렸다 당겨진다

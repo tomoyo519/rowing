@@ -123,6 +123,52 @@ export function stepAt(p: PaceProfile, t: number): StepInfo {
   }
 }
 
+/** 다음에 올 구간. HUD가 "다음엔 이 페이스"를 미리 보여주는 데 쓴다. */
+export interface NextStepInfo {
+  label: string
+  /** 다음 구간의 속도 배율 */
+  intensity: number
+  /** 다음 구간이 시작되기까지 남은 시간 (초) */
+  startsIn: number
+}
+
+/**
+ * 시각 t(초) 기준으로 다음 구간. 구간 개념이 없는 프로파일(steady, wave)이나
+ * 코스가 끝나기 전에 다음 구간이 오지 않으면 null.
+ */
+export function nextStepAt(p: PaceProfile, t: number, durationSec = Infinity): NextStepInfo | null {
+  let next: NextStepInfo | null = null
+  switch (p.kind) {
+    case 'steady':
+    case 'wave':
+      return null
+    case 'ramp': {
+      if (t >= p.overSec) return null
+      const rising = p.to > p.from
+      next = { label: rising ? '마무리' : '쿨다운', intensity: p.to, startsIn: p.overSec - t }
+      break
+    }
+    case 'intervals': {
+      const total = patternTotal(p)
+      if (total <= 0) return null
+      const local = ((t % total) + total) % total
+      let acc = 0
+      for (let i = 0; i < p.pattern.length; i++) {
+        const step = p.pattern[i]!
+        if (local < acc + step.sec) {
+          const n = p.pattern[(i + 1) % p.pattern.length]!
+          next = { label: n.label, intensity: n.intensity, startsIn: acc + step.sec - local }
+          break
+        }
+        acc += step.sec
+      }
+      break
+    }
+  }
+  if (next === null || t + next.startsIn >= durationSec) return null
+  return next
+}
+
 /** 코스 구간 경계. 날씨처럼 "구간마다 하나"로 고정하는 요소가 쓴다. */
 export interface ProfileSection {
   start: number

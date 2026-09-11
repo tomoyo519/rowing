@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  intensityAt, stepAt, meanIntensity, patternTotal, profileSwing, profileRange,
+  nextStepAt, intensityAt, stepAt, meanIntensity, patternTotal, profileSwing, profileRange,
   profileOscillation, profileSections,
   type PaceProfile,
 } from './profile'
@@ -225,5 +225,34 @@ describe('profileSections', () => {
     const s = profileSections({ kind: 'steady' }, 1_260)   // 21분
     expect(s).toHaveLength(4)
     expect(s.at(-1)).toEqual({ start: 900, end: 1260, label: '스테디' })
+  })
+})
+
+describe('nextStepAt', () => {
+  const intervals = {
+    kind: 'intervals' as const,
+    pattern: [{ sec: 180, intensity: 1.1, label: '푸시' }, { sec: 120, intensity: 0.9, label: '회복' }],
+  }
+
+  it('구간 중에는 다음 구간과 남은 시간을 준다', () => {
+    const n = nextStepAt(intervals, 30)
+    expect(n).toEqual({ label: '회복', intensity: 0.9, startsIn: 150 })
+    expect(nextStepAt(intervals, 200)).toEqual({ label: '푸시', intensity: 1.1, startsIn: 100 })
+  })
+
+  it('코스가 끝나기 전에 다음 구간이 오지 않으면 null', () => {
+    expect(nextStepAt(intervals, 200, 250)).toBeNull()
+    expect(nextStepAt(intervals, 200, 400)).not.toBeNull()
+  })
+
+  it('구간이 없는 프로파일은 null', () => {
+    expect(nextStepAt({ kind: 'steady' }, 10)).toBeNull()
+    expect(nextStepAt({ kind: 'wave', periodSec: 60, amplitude: 0.05 }, 10)).toBeNull()
+  })
+
+  it('램프는 끝나는 시점을 다음 구간으로 본다', () => {
+    const ramp = { kind: 'ramp' as const, from: 0.9, to: 1.1, overSec: 300 }
+    expect(nextStepAt(ramp, 100)).toEqual({ label: '마무리', intensity: 1.1, startsIn: 200 })
+    expect(nextStepAt(ramp, 300)).toBeNull()
   })
 })

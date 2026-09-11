@@ -9,11 +9,13 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host",
+    "preview": "vite preview --host --port 4180 --strictPort",
     "tunnel": "cloudflared tunnel --url http://localhost:5173",
+    "preview:tunnel": "cloudflared tunnel --url http://localhost:4180",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
-    "shot": "node tools/shot.mjs shots"
+    "shot": "node tools/shot.mjs shots",
+    "shot:rig": "node tools/rigshot.mjs shots/rig-head.png"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.54.0",

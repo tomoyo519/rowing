@@ -1,6 +1,6 @@
 import { BoatTracker, powerToSpeed, speedToSplit, splitToSpeed } from './physics'
 import { StrokeEngine } from './stroke'
-import { intensityAt, stepAt, meanIntensityBetween, type StepInfo } from './profile'
+import { intensityAt, stepAt, nextStepAt, meanIntensityBetween, type StepInfo, type NextStepInfo } from './profile'
 import type { WindowStats } from './feedback'
 import type { Course } from './courses'
 import type { RowerSample } from '../types'
@@ -34,7 +34,12 @@ export const START_ACCEL = 0.3
 export const RECENT_STROKE_MS = 4500
 /** 출발 대기 중 이만큼(초) 아무 패킷도 없으면 안내를 바꾼다. 가만히 있을 때 조용한 콘솔이 있어 달릴 때(8초)보다 길다. */
 export const ARMED_QUIET_AFTER = 20
-/** 페이스 보트의 관성 (초). 플레이어 보트(BoatTracker 0.9초)와 같아야 출발선에서 나란히 나간다. */
+/**
+ * 페이스 보트의 관성 (초). 구간 강도가 바뀔 때 속도가 뚝 끊기지 않게 하는 용도다.
+ * 출발에는 쓰지 않는다 — 페이스 보트는 출발선에서 곧바로 목표 속도로 나간다.
+ * (관성으로 0에서 가속시키면 τ·v ≈ 3m를 영영 잃어, 기기 거리를 그대로 쫓는 플레이어가
+ * 첫 스트로크부터 한 척 앞서 버린다.)
+ */
 export const PACE_INERTIA_SEC = 0.9
 /**
  * 멈춤 판정은 샘플 수가 아니라 시간으로 한다. 알림 주기가 1~5Hz로 제각각이고,
@@ -54,6 +59,8 @@ export const STAGNANT_DISTANCE_MS = 4000
 const PACE_MIN = 60          // 1:00/500m — 세계 기록보다 20초 빠르다
 const PACE_MAX = 3000        // 50:00/500m — 이보다 느리면 정보가 아니다 (0xFFFF 센티널 포함)
 const POWER_MAX = 1500       // W — 스프린트 피크도 1200을 넘지 않는다
+/** 심박 필드가 이 시간보다 오래 빠지면 벨트가 끊긴 것으로 보고 숨긴다. */
+const HEART_RATE_STALE_MS = 10_000
 
 export interface Metrics {
   distance: number
@@ -70,13 +77,22 @@ export interface Metrics {
   calories?: number
   /** 페이스 보트 대비 거리차 (m). +면 앞서는 중 */
   gap: number
-  /** 페이스 보트의 현재 속도 (m/s) — 출발 직후엔 0에서 올라온다 */
+  /** 페이스 보트의 현재 속도 (m/s) */
   paceSpeed: number
   progress: number
   /** 지금 이 순간 코스가 요구하는 스플릿 (초/500m) */
   targetSplit: number
   /** 현재 구간 이름 + 남은 시간 */
   step: StepInfo
+  /** 다음 구간. 없으면 null */
+  nextStep: NextStepInfo | null
+  /** 다음 구간의 목표 스플릿 (초/500m). 다음 구간이 없으면 null */
+  nextTargetSplit: number | null
+  /**
+   * 구간 경계선이 내 보트 기준 몇 m 앞에 있는지. 페이스 보트가 구간이 바뀌는 순간 지나갈 자리다.
+   * 구간 경계가 없으면 null.
+   */
+  boundaryAlong: number | null
   /** 현재 구간 강도 배율 (1.0 = 기준) */
   intensity: number
   /** 데이터가 안 들어와 세션이 멈춘 상태인지 */
@@ -106,6 +122,9 @@ export class Session {
 
   private lastPower = 0
   private lastSample: RowerSample | null = null
+  /** More Data 분할 알림에서 심박 필드가 빠져도 HUD가 깜빡이지 않게 마지막 값을 보관한다. */
+  private lastHeartRate: number | undefined
+  private lastHeartRateAt: number | undefined
   private startStrokeCount: number | null = null
   readonly track: { t: number; d: number; split: number; spm: number; power: number }[] = []
   private lastTrackAt = -1
@@ -128,6 +147,9 @@ export class Session {
   private lastStrokeCountSeen: number | null = null
   private lastDistanceChangeAt = 0
   private lastDistanceValue: number | null = null
+  /** 속도 계산용 거리 기준. 5Hz 근처의 짧은 지터는 여러 패킷에 걸쳐 누적한다. */
+  private distanceSpeedAt: number | null = null
+  private distanceSpeedValue: number | null = null
   /** arm() 시점의 기준값. 이보다 늘어야 출발이다 */
   private armStrokeCount: number | null = null
   private armDistance: number | null = null
@@ -162,7 +184,8 @@ export class Session {
     this.zeroSince = null
     this.armStrokeCount = null
     this.armDistance = null
-    this.paceSpeed = 0
+    // 출발선에서 곧바로 목표 속도. 대기(armed) 중에는 update()가 거리를 쌓지 않으니 미리 둬도 된다.
+    this.paceSpeed = this.paceTarget()
     this.stoppedForStagnation = false
   }
 
@@ -212,6 +235,33 @@ export class Session {
     const power = s.instantaneousPower
     if (power !== undefined && power > 0 && power <= POWER_MAX) return powerToSpeed(power)
     return null
+  }
+
+  /**
+   * 거리 증가분으로 구한 속도. 직전에 거리가 바뀐 샘플과 비교한다 — 스트로크마다 한 번만
+   * 거리를 갱신하는 콘솔도 있어 창이 몇 초씩 벌어질 수 있다. 그럴듯한 범위 밖이면 null.
+   */
+  private speedFromDistance(s: RowerSample): number | null {
+    const distance = s.totalDistance
+    if (distance === undefined) return null
+    if (
+      this.distanceSpeedAt === null || this.distanceSpeedValue === null
+      || s.at <= this.distanceSpeedAt || distance < this.distanceSpeedValue
+    ) {
+      this.distanceSpeedAt = s.at
+      this.distanceSpeedValue = distance
+      return null
+    }
+    const dt = (s.at - this.distanceSpeedAt) / 1000
+    // 5Hz 타이머는 실제로 199.xms가 될 수 있다. 그보다 빠른 짧은 간격은 기준을 버리지 않고 누적한다.
+    if (dt < 0.15) return null
+    const v = (distance - this.distanceSpeedValue) / dt
+    this.distanceSpeedAt = s.at
+    this.distanceSpeedValue = distance
+    if (dt > 15) return null
+    const split = speedToSplit(v)
+    if (!(split >= PACE_MIN && split <= PACE_MAX)) return null
+    return v
   }
 
   /**
@@ -287,9 +337,18 @@ export class Session {
     return intensityAt(this.course.profile, this.elapsed)
   }
 
+  /** 지금 구간에서 페이스 보트가 내야 할 속도 (m/s) */
+  private paceTarget(): number {
+    return splitToSpeed(this.baseSplit) * this.intensity
+  }
+
   onSample(s: RowerSample) {
     this.sinceSample = 0
     this.lastSample = s
+    if (s.heartRate !== undefined) {
+      this.lastHeartRate = s.heartRate
+      this.lastHeartRateAt = s.at
+    }
 
     // 스트로크 완료와 거리 변화는 "아직 움직인다"의 증거다 — 멈춤 판정을 막고 출발 판정을 연다.
     // 비교 상대는 직전 샘플이 아니라 그 필드를 실은 마지막 샘플이다 (분할 알림 콘솔).
@@ -297,8 +356,12 @@ export class Session {
       && this.lastStrokeCountSeen !== null && s.strokeCount > this.lastStrokeCountSeen
     if (s.strokeCount !== undefined) this.lastStrokeCountSeen = s.strokeCount
     if (strokeAdvanced) this.strokeAdvanceTimes = [s.at, this.strokeAdvanceTimes[0] ?? -Infinity]
+    const distanceChanged = s.totalDistance !== undefined && s.totalDistance !== this.lastDistanceValue
     const distanceAdvanced = s.totalDistance !== undefined
       && this.lastDistanceValue !== null && s.totalDistance > this.lastDistanceValue
+    // 페이스도 파워도 안 실어 주는(또는 못 믿을 값만 주는) 기기용 예비 속도: 거리 증가분 / 경과 시간.
+    // 거리가 늘었는데 속도가 0이면 배는 패킷마다 끌려가듯 움직이고 스플릿·게이지는 텅 빈다.
+    const distanceSpeed = distanceChanged ? this.speedFromDistance(s) : null
     if (strokeAdvanced || distanceAdvanced) {
       this.zeroSince = null
       this.stoppedForStagnation = false
@@ -327,6 +390,9 @@ export class Session {
     let explicitlyStopped = false
     if (reported !== null) {
       speed = reported
+      this.zeroSince = null
+    } else if (distanceSpeed !== null) {
+      speed = distanceSpeed
       this.zeroSince = null
     } else if (this.reportsZero(s) && !strokeAdvanced && !distanceAdvanced) {
       // 기기가 명시적으로 "0"이라고 말했다. 충분히 오래 이어지면 정말 멈춘 것이다.
@@ -401,10 +467,8 @@ export class Session {
 
     this.elapsed += dt
     this.boat.update(dt)
-    // 페이스 보트는 구간 강도에 따라 빨라졌다 느려진다. 플레이어 보트와 같은 관성으로 출발선에서
-    // 함께 가속한다 — 한 프레임에 전속력이면 첫 스트로크부터 3m 뒤진 채 시작하게 된다.
-    const paceTarget = splitToSpeed(this.baseSplit) * this.intensity
-    this.paceSpeed += (paceTarget - this.paceSpeed) * (1 - Math.exp(-dt / PACE_INERTIA_SEC))
+    // 페이스 보트는 구간 강도에 따라 빨라졌다 느려진다. 출발은 start()에서 이미 목표 속도로 맞춰 뒀다.
+    this.paceSpeed += (this.paceTarget() - this.paceSpeed) * (1 - Math.exp(-dt / PACE_INERTIA_SEC))
     this.paceDistance += this.paceSpeed * dt
 
     const sec = Math.floor(this.elapsed)
@@ -454,6 +518,8 @@ export class Session {
     const sc = this.lastSample?.strokeCount
     const intensity = this.intensity
     const ghostDistance = this.ghost ? this.ghost.distanceAt(this.elapsed) : null
+    const step = stepAt(this.course.profile, this.elapsed)
+    const nextStep = nextStepAt(this.course.profile, this.elapsed, this.course.durationSec)
     return {
       distance: d,
       speed: this.boat.speed,
@@ -464,13 +530,25 @@ export class Session {
       spm: this.stroke.spm,
       power: this.lastPower,
       strokeCount: sc !== undefined && this.startStrokeCount !== null ? sc - this.startStrokeCount : 0,
-      heartRate: this.lastSample?.heartRate,
+      heartRate: this.lastHeartRateAt !== undefined
+        && (this.lastSample?.at ?? this.lastHeartRateAt) - this.lastHeartRateAt <= HEART_RATE_STALE_MS
+        ? this.lastHeartRate
+        : undefined,
       calories: this.lastSample?.totalEnergy,
       gap: d - this.paceDistance,
       paceSpeed: this.paceSpeed,
       progress: Math.min(1, this.elapsed / this.course.durationSec),
       targetSplit: this.baseSplit / intensity,
-      step: stepAt(this.course.profile, this.elapsed),
+      step,
+      nextStep,
+      nextTargetSplit: nextStep ? this.baseSplit / nextStep.intensity : null,
+      boundaryAlong: step.remaining === null || nextStep === null
+        ? null
+        : this.paceDistance
+          + splitToSpeed(this.baseSplit)
+            * meanIntensityBetween(this.course.profile, this.elapsed, this.elapsed + step.remaining)
+            * step.remaining
+          - d,
       intensity,
       stalled: this.stallReason !== null,
       stallReason: this.stallReason,

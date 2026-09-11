@@ -37,7 +37,7 @@ const TORSO = 0.55
  * 몸통 회전체는 어깨선 위로 승모근 칼라가 솟아 목 아래를 받친다.
  * 예전엔 몸통이 어깨 높이에서 뚜껑처럼 납작하게 끝나 목이 통 위에 꽂힌 못처럼 보였다.
  */
-const TORSO_TOP = 0.604
+const TORSO_TOP = 0.578
 /** 팔 관절은 어깨선보다 이만큼 아래, 몸통 안쪽에 있다 — 위팔 반구가 삼각근이 되어 바깥으로 드러난다 */
 const SHOULDER_DROP = 0.05
 /** 척추를 두 마디로 나눈다: 골반~갈비뼈(허리)와 갈비뼈~어깨(등). 따로 굽어야 캐치에서 등이 둥글어진다 */
@@ -65,9 +65,11 @@ const ARM_STRAIGHT = UPPER_ARM + FOREARM - 0.010
 const ARM_FINISH = 0.35
 /** 스윕각 한계 (rad). 실제 스컬 아크는 캐치 -60~65°, 피니시 +35~45°다 */
 const SWEEP_LIMIT = 1.30
-const SHOULDER_HALF = 0.17
+/** 팔 관절 좌우 위치. 몸통 어깨 반폭(0.218)보다 조금 안쪽이라 위팔 반구가 삼각근으로 드러난다 */
+const SHOULDER_HALF = 0.185
 const HIP_HALF = 0.11
-const HEAD_RADIUS = 0.105
+/** 머리 반지름. 서 있으면 1.74m인 몸에 8등신에 가깝도록 — 큰 머리는 인형처럼 보인다 */
+const HEAD_RADIUS = 0.100
 
 /** 노받이(oarlock) 위치 */
 const LOCK = { x: -0.30, y: 0.47, z: 0.85 }
@@ -195,8 +197,10 @@ function createOarBladeGeometry() {
  */
 const TORSO_PROFILE: [number, number][] = [
   [0.000, 0.000], [0.112, 0.010], [0.126, 0.060], [0.112, 0.160],
-  [0.118, 0.240], [0.132, 0.300], [0.140, 0.330], [0.153, 0.420], [0.156, 0.470],
-  [0.150, 0.505], [0.130, 0.540], [0.098, 0.565], [0.076, 0.585], [0.070, 0.600], [0.000, TORSO_TOP],
+  // 어깨는 골반(반폭 0.198)보다 확실히 넓어야 V자 상체가 된다 — 0.168 × 1.3 = 반폭 0.218
+  [0.118, 0.240], [0.130, 0.300], [0.140, 0.330], [0.160, 0.420], [0.168, 0.470],
+  // 어깨 위는 넓게 둥글려 바로 닫는다. 좁고 긴 옷깃 기둥을 두면 살색 목 밑에 "두 번째 목"으로 보인다.
+  [0.160, 0.505], [0.142, 0.535], [0.112, 0.558], [0.072, 0.572], [0.000, TORSO_TOP],
 ]
 const SPINE_OVERLAP = 0.03
 
@@ -227,19 +231,38 @@ function createTorsoSegmentGeometry(from: number, to: number) {
  * 그래서 관절에서 만나는 두 팔다리의 반구가 그대로 관절 공이 된다 — 굽힘 바깥쪽은 매끄럽게 이어지고
  * 안쪽은 서로 겹쳐 숨는다. 관절마다 따로 구를 얹으면 굽힐 때 구가 삐져나온다.
  * 관절에서 만나는 두 반지름을 맞춰야 한 덩어리로 읽힌다.
+ *
+ * place(from, to)는 로컬 -Y를 from, +Y를 to에 놓는다. 그래서 radiusStart가 from(몸쪽 관절),
+ * radiusEnd가 to(말단 관절) 반지름이다. 예전엔 인자 순서가 반대로 읽혀 팔뚝이 손목에서, 정강이가
+ * 발목에서 가장 굵은 채 그려졌다 — 마네킹처럼 보인 큰 이유였다.
+ *
+ * bulge는 근육 배: bulgeAt(0=시작, 1=끝) 근처에서 반지름이 (1+bulge)배까지 부푼다.
+ * 이두·종아리처럼 한쪽으로 치우친 배가 있어야 캡슐이 아니라 팔다리로 읽힌다.
  */
-function createLimbGeometry(radiusTop: number, radiusBottom: number, length: number) {
+function createLimbGeometry(
+  radiusStart: number, radiusEnd: number, length: number, bulge = 0, bulgeAt = 0.5,
+) {
   const points: THREE.Vector2[] = []
   const steps = 6
-  const bottomCenter = -length / 2
-  const topCenter = length / 2
+  const startCenter = -length / 2
+  const endCenter = length / 2
   for (let k = 0; k <= steps; k++) {
     const a = -Math.PI / 2 + (k / steps) * (Math.PI / 2)
-    points.push(new THREE.Vector2(radiusBottom * Math.cos(a), bottomCenter + radiusBottom * Math.sin(a)))
+    points.push(new THREE.Vector2(radiusStart * Math.cos(a), startCenter + radiusStart * Math.sin(a)))
+  }
+  if (bulge > 0) {
+    const shaftSteps = 10
+    for (let k = 1; k < shaftSteps; k++) {
+      const t = k / shaftSteps
+      const base = radiusStart + (radiusEnd - radiusStart) * t
+      // 종 모양 봉우리. 양 끝에서 0이 되도록 눌러 관절 반구와 매끈하게 이어진다.
+      const w = Math.exp(-((t - bulgeAt) ** 2) / (2 * 0.2 * 0.2)) * Math.sin(Math.PI * t)
+      points.push(new THREE.Vector2(base * (1 + bulge * w), startCenter + t * length))
+    }
   }
   for (let k = 0; k <= steps; k++) {
     const a = (k / steps) * (Math.PI / 2)
-    points.push(new THREE.Vector2(radiusTop * Math.cos(a), topCenter + radiusTop * Math.sin(a)))
+    points.push(new THREE.Vector2(radiusEnd * Math.cos(a), endCenter + radiusEnd * Math.sin(a)))
   }
   const geometry = new THREE.LatheGeometry(points, 14)
   geometry.computeVertexNormals()
@@ -486,29 +509,31 @@ export class Rig {
     g.add(this.torsoLower, this.torsoUpper)
 
     // 가슴을 가로지르는 팀 스트라이프 — 몸통이 한 색으로 뭉치지 않는다.
-    // 몸통 회전체 반지름(0.140~0.153)에 3mm만 띄워 붙인다 — 더 크면 허공에 뜬 고리가 된다
-    const stripeGeo = new THREE.CylinderGeometry(0.156, 0.143, 0.075, 20, 1, true)
+    // 몸통 회전체 반지름(0.142~0.158)에 3mm만 띄워 붙인다 — 더 크면 허공에 뜬 고리가 된다
+    const stripeGeo = new THREE.CylinderGeometry(0.161, 0.145, 0.075, 20, 1, true)
     stripeGeo.scale(0.80, 1, 1.30)
     this.chestStripe = new THREE.Mesh(stripeGeo, this.mat(c.trim === c.jersey ? c.shorts : c.shorts, { roughness: 0.8 }))
     g.add(this.chestStripe)
 
-    this.neck = new THREE.Mesh(createLimbGeometry(0.052, 0.056, 0.14), skin)
+    this.neck = new THREE.Mesh(createLimbGeometry(0.060, 0.050, 0.14), skin)
     g.add(this.neck)
 
     this.head = this.buildHead(c, skin, hairMat)
     g.add(this.head)
 
     for (let i = 0; i < 2; i++) {
-      // 관절에서 만나는 반지름을 맞춘다: 어깨 0.058, 팔꿈치 0.044, 손목 0.036 / 엉덩이 0.086, 무릎 0.064, 발목 0.040
-      this.upperArm.push(new THREE.Mesh(createLimbGeometry(0.058, 0.044, UPPER_ARM), skin))
-      this.forearm.push(new THREE.Mesh(createLimbGeometry(0.044, 0.036, FOREARM), skin))
+      // 관절에서 만나는 반지름을 맞춘다: 어깨 0.058, 팔꿈치 0.044, 손목 0.034 / 엉덩이 0.086, 무릎 0.062, 발목 0.038
+      // 위팔은 가운데(이두·삼두), 아래팔은 팔꿈치 쪽(굴근)이 부푼다.
+      this.upperArm.push(new THREE.Mesh(createLimbGeometry(0.058, 0.044, UPPER_ARM, 0.20, 0.45), skin))
+      this.forearm.push(new THREE.Mesh(createLimbGeometry(0.044, 0.034, FOREARM, 0.18, 0.33), skin))
       // 주먹: x = 손등 두께, y = 손목 방향, z = 노 방향
       const fist = new THREE.Mesh(new RoundedBoxGeometry(0.076, 0.066, 0.090, 2, 0.028), skin)
       this.fists.push(fist)
 
-      this.shortsLegs.push(new THREE.Mesh(createLimbGeometry(0.094, 0.088, 0.21), shorts))
-      this.thigh.push(new THREE.Mesh(createLimbGeometry(0.086, 0.064, THIGH), skin))
-      this.shin.push(new THREE.Mesh(createLimbGeometry(0.064, 0.040, SHIN), skin))
+      this.shortsLegs.push(new THREE.Mesh(createLimbGeometry(0.096, 0.092, 0.21), shorts))
+      // 허벅지는 앞쪽 중간(대퇴사두), 정강이는 무릎 아래(종아리)가 부푼다
+      this.thigh.push(new THREE.Mesh(createLimbGeometry(0.086, 0.062, THIGH, 0.12, 0.42), skin))
+      this.shin.push(new THREE.Mesh(createLimbGeometry(0.060, 0.038, SHIN, 0.34, 0.26), skin))
       this.socks.push(new THREE.Mesh(createLimbGeometry(0.045, 0.045, 0.09), this.mat('#f2f4f4', { roughness: 0.9 })))
       this.shoes.push(new THREE.Mesh(
         new RoundedBoxGeometry(0.19, 0.08, 0.105, 2, 0.028), this.mat('#202a36', { roughness: 0.7 }),
@@ -566,12 +591,27 @@ export class Rig {
     const head = new THREE.Group()
     const r = HEAD_RADIUS
 
-    const skull = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), skin)
-    skull.scale.set(1.0, 1.14, 0.86)
-    const jaw = new THREE.Mesh(new THREE.SphereGeometry(r * 0.66, 14, 12), skin)
-    jaw.scale.set(1.0, 0.82, 1.05)
-    jaw.position.set(-0.018, -r * 0.72, 0)
-    head.add(this.shadowed(skull), jaw)
+    // 두개골은 앞뒤로 길고 좌우로 좁은 계란형이며 뒤통수가 살짝 뒤로 나온다
+    // 분할을 촘촘히: 머리카락 타원체가 뒤통수 아래에서 두개골 안으로 들어가므로 보이는 머리카락 경계는
+    // 두 표면의 교차선이다. 분할이 성기면 그 선이 큰 톱니로 보인다.
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 24), skin)
+    skull.scale.set(1.02, 1.10, 0.86)
+    skull.position.set(0.006, 0, 0)
+    // 턱은 두개골보다 좁고, 턱 끝이 따로 튀어나와야 옆모습에 얼굴선이 생긴다
+    const jaw = new THREE.Mesh(new THREE.SphereGeometry(r * 0.64, 14, 12), skin)
+    jaw.scale.set(1.0, 0.78, 0.98)
+    jaw.position.set(-0.016, -r * 0.70, 0)
+    const chin = new THREE.Mesh(new THREE.SphereGeometry(r * 0.26, 10, 8), skin)
+    chin.scale.set(1.0, 0.8, 1.15)
+    chin.position.set(-r * 0.56, -r * 0.88, 0)
+    head.add(this.shadowed(skull), jaw, chin)
+    // 광대 — 얼굴이 매끈한 공에서 벗어나는 가장 싼 방법
+    for (const side of [1, -1]) {
+      const cheek = new THREE.Mesh(new THREE.SphereGeometry(r * 0.38, 10, 8), skin)
+      cheek.scale.set(0.9, 0.6, 0.8)
+      cheek.position.set(-r * 0.42, -r * 0.14, side * r * 0.46)
+      head.add(cheek)
+    }
 
     const eyeWhite = this.mat('#ddd2c8', { roughness: 0.6 })
     const iris = this.mat('#2b2018', { roughness: 0.3 })
@@ -586,9 +626,10 @@ export class Rig {
       const brow = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.007, 0.034), hairMat)
       brow.position.set(-r * 0.86, 0.047, side * 0.037)
       brow.rotation.x = side * 0.18
-      const ear = new THREE.Mesh(new THREE.SphereGeometry(0.019, 10, 8), skin)
-      ear.scale.set(0.55, 1.0, 0.9)
-      ear.position.set(0.012, 0.0, side * r * 0.86)
+      // 귀는 눈썹에서 코밑까지. 윗부분은 머리카락 밑에 숨고 아랫부분과 귓바퀴만 밖으로 나온다.
+      const ear = new THREE.Mesh(new THREE.SphereGeometry(0.018, 10, 8), skin)
+      ear.scale.set(0.55, 1.3, 0.8)
+      ear.position.set(0.010, -0.018, side * r * 0.78)
       head.add(white, pupil, brow, ear)
     }
     const nose = new THREE.Mesh(new THREE.ConeGeometry(0.013, 0.038, 8), skin)
@@ -600,21 +641,31 @@ export class Rig {
 
     // 머리카락: 이마는 드러나고 뒤통수는 덮이도록 캡을 뒤로 기울인다.
     const hair = new THREE.Mesh(
-      new THREE.SphereGeometry(r * 1.07, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat,
+      new THREE.SphereGeometry(r * 1.07, 32, 18, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat,
     )
-    hair.scale.set(1.0, 1.12, 0.88)
+    // x·y 반지름을 같게 둔다 — 그래야 z축으로 돌린 뒷머리 캡이 같은 표면 위에 놓여 주름이 생기지 않는다
+    hair.scale.set(1.06, 1.06, 0.88)
     hair.position.set(0.012, 0.024, 0)
     hair.rotation.z = -0.34
-    head.add(this.shadowed(hair))
+    // 뒷머리: 캡 하나면 헬멧처럼 보인다. 같은 타원체를 더 뒤로 기울여 뒤통수와 목덜미를 덮는다.
+    const nape = new THREE.Mesh(
+      new THREE.SphereGeometry(r * 1.07, 32, 18, 0, Math.PI * 2, 0, Math.PI * 0.60), hairMat,
+    )
+    nape.scale.set(1.06, 1.06, 0.88)
+    nape.position.set(0.012, 0.024, 0)
+    nape.rotation.z = -1.05
+    head.add(this.shadowed(hair), nape)
 
     if (c.cap) {
       const capMat = this.mat(c.cap, { roughness: 0.85 })
       const crown = new THREE.Mesh(
-        new THREE.SphereGeometry(r * 1.09, 20, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), capMat,
+        new THREE.SphereGeometry(r * 1.10, 20, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), capMat,
       )
-      crown.scale.set(1.02, 0.92, 0.9)
-      crown.position.set(0.004, 0.03, 0)
-      crown.rotation.z = -0.1
+      // 머리카락 타원체(중심 x 0.012, 위 y≈0.137, 앞뒤 ±0.113)와 중심을 맞추고 조금 크게 —
+      // 중심이 어긋나면 옆·뒤에서 머리카락이 모자를 뚫고 나와 앞 띠와 챙만 남는다
+      crown.scale.set(1.07, 1.02, 0.92)
+      crown.position.set(0.012, 0.03, 0)
+      crown.rotation.z = 0
       const visor = new THREE.Mesh(
         new THREE.CircleGeometry(r * 0.78, 14, Math.PI / 2, Math.PI),
         this.mat(c.cap, { roughness: 0.85, side: THREE.DoubleSide }),
@@ -675,9 +726,10 @@ export class Rig {
     this.chestStripe.scale.x *= breath
     this.chestStripe.scale.z *= breath
 
-    const headPos = shoulder.clone().addScaledVector(upperAxis, 0.235)
-    const neckStart = collarTop.clone().addScaledVector(upperAxis, -0.015)
-    const neckEnd = headPos.clone().addScaledVector(upperAxis, -0.09)
+    const headPos = shoulder.clone().addScaledVector(upperAxis, 0.21)
+    // 목은 어깨 돔 안쪽에서 시작해 머리 속으로 들어간다 — 살색 기둥 하나만 보여야 한다.
+    const neckStart = collarTop.clone().addScaledVector(upperAxis, -0.04)
+    const neckEnd = headPos.clone().addScaledVector(upperAxis, -0.07)
     place(this.neck, neckStart, neckEnd, 0.14)
     this.head.position.copy(headPos)
     // 몸을 숙여도 시선은 선미 쪽 수평을 향한다 — 턱이 가슴에 붙지 않는다.

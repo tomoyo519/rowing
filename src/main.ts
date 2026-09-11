@@ -695,9 +695,13 @@ function updateHud() {
   $('s-time').textContent = formatClock(m.elapsed)
   $('s-speed').textContent = (m.speed * 3.6).toFixed(1)
   $('s-calories').textContent = m.calories === undefined ? '—' : String(Math.round(m.calories))
+  // 심박은 콘솔에 벨트가 붙어 있을 때만 온다. 없으면 0이나 빈칸 대신 '—'
+  $('s-hr').textContent = m.heartRate === undefined || m.heartRate <= 0 ? '—' : String(Math.round(m.heartRate))
   $('s-spm').textContent = String(Math.round(m.spm))
   $('s-pow').textContent = String(Math.round(m.power))
-  $('s-remaining').textContent = `${formatClock(m.remaining)} 남음`
+  // 시간제 코스라 실제 완주 거리는 정해져 있지 않다. 페이스 보트 기준 예상 잔여 거리임을 명시한다.
+  const targetLeft = m.remaining <= 0 ? 0 : Math.max(0, Math.round(raceTotal - m.distance + m.gap))
+  $('s-remaining').textContent = `${formatClock(m.remaining)} 남음 · 목표 약 ${targetLeft.toLocaleString('en-US')}m`
 
   // 목표 대비 얼마나 벗어났는지 색으로. 값이 없으면 색도 없다 — 빨간 '--:--'는 고장처럼 보인다.
   const off = m.split - m.targetSplit
@@ -713,6 +717,14 @@ function updateHud() {
   rem.textContent = m.step.remaining !== null ? formatClock(m.step.remaining) : ''
   seg.classList.toggle('hard', m.intensity > 1.03)
   seg.classList.toggle('easy', m.intensity < 0.97)
+
+  // 다음 구간 — 몇 초 뒤에 어떤 페이스로 바뀌는지 미리 보여준다
+  const next = $('next-panel')
+  $('s-next-label').textContent = m.nextStep ? m.nextStep.label : '구간 변화 없음'
+  $('s-next-in').textContent = m.nextStep ? `${formatClock(m.nextStep.startsIn)} 뒤` : ''
+  $('s-next-target').textContent = m.nextTargetSplit === null ? '—' : formatSplitShort(m.nextTargetSplit)
+  next.classList.toggle('hard', m.nextStep !== null && m.nextStep.intensity > m.intensity + 0.02)
+  next.classList.toggle('easy', m.nextStep !== null && m.nextStep.intensity < m.intensity - 0.02)
 
   const gap = $('s-gap')
   const g = Math.round(m.gap)
