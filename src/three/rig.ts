@@ -65,11 +65,54 @@ const ARM_STRAIGHT = UPPER_ARM + FOREARM - 0.010
 const ARM_FINISH = 0.35
 /** 스윕각 한계 (rad). 실제 스컬 아크는 캐치 -60~65°, 피니시 +35~45°다 */
 const SWEEP_LIMIT = 1.30
-/** 팔 관절 좌우 위치. 몸통 어깨 반폭(0.218)보다 조금 안쪽이라 위팔 반구가 삼각근으로 드러난다 */
-const SHOULDER_HALF = 0.185
-const HIP_HALF = 0.11
+/** 팔 관절·엉덩이 관절 좌우 위치는 체형(BODY_SHAPES)이 정한다. 남자 기준 어깨 0.185는 몸통 어깨 반폭(0.218)보다
+ *  조금 안쪽이라 위팔 반구가 삼각근으로 드러난다. */
+/** 손 교차 지점에서 왼쪽 어깨가 올라가고 오른쪽이 내려가는 높이 (m) — 스컬러는 손이 겹칠 때 어깨가 기운다 */
+const SHOULDER_ROLL = 0.012
+/** 페더링 때 손목이 떨어지는 각도 (rad). 리커버리에서 손등이 앞·아래로 구른다 */
+const WRIST_DROP = 0.45
+/** 무릎 벌어짐. 캐치에선 상체가 무릎 사이로 들어가도록 벌어지고 피니시에선 모인다 */
+const KNEE_SPLAY_CATCH = 0.26
+const KNEE_SPLAY_FINISH = 0.10
 /** 머리 반지름. 서 있으면 1.74m인 몸에 8등신에 가깝도록 — 큰 머리는 인형처럼 보인다 */
 const HEAD_RADIUS = 0.100
+
+/** 아바타 체형. 뼈대(관절 사이 거리)는 같고 살집·어깨 폭·머리 모양만 다르다 — IK와 노 계산은 체형과 무관하다 */
+export type RigBody = 'male' | 'female'
+
+interface BodyShape {
+  /** 팔 관절 좌우 위치 (m) */
+  shoulderHalf: number
+  /** 엉덩이 관절 좌우 위치 (m) */
+  hipHalf: number
+  /** 몸통 회전체 반지름 배율. y는 엉덩이 0 ~ 어깨 위 0.578 */
+  torsoScale: (y: number) => number
+  /** 골반 타원체 좌우 폭 배율 */
+  pelvisWidth: number
+  /** 팔·다리·목 반지름 배율, 근육 배 배율 */
+  arm: number
+  leg: number
+  neck: number
+  bulge: number
+  /** 뒤로 묶은 머리 */
+  ponytail: boolean
+}
+
+const bump = (y: number, center: number, width: number) => Math.exp(-(((y - center) / width) ** 2))
+
+const BODY_SHAPES: Record<RigBody, BodyShape> = {
+  male: {
+    shoulderHalf: 0.185, hipHalf: 0.11, torsoScale: () => 1, pelvisWidth: 1.32,
+    arm: 1, leg: 1, neck: 1, bulge: 1, ponytail: false,
+  },
+  female: {
+    // 어깨는 좁고 허리는 잘록하며 골반은 넓다. 팔다리는 가늘고 근육 배는 덜 드러난다.
+    // 뼈대가 같아 키는 같지만, 실루엣만으로 멀리서도 구분된다.
+    shoulderHalf: 0.168, hipHalf: 0.118, pelvisWidth: 1.44,
+    torsoScale: y => 1 + 0.06 * bump(y, 0.04, 0.07) - 0.10 * bump(y, 0.20, 0.07) - 0.09 * bump(y, 0.48, 0.09),
+    arm: 0.86, leg: 0.92, neck: 0.90, bulge: 0.55, ponytail: true,
+  },
+}
 
 /** 노받이(oarlock) 위치 */
 const LOCK = { x: -0.30, y: 0.47, z: 0.85 }
@@ -213,11 +256,11 @@ function torsoRadiusAt(y: number) {
   return 0
 }
 
-function createTorsoSegmentGeometry(from: number, to: number) {
+function createTorsoSegmentGeometry(from: number, to: number, scale: (y: number) => number = () => 1) {
   const points: THREE.Vector2[] = [new THREE.Vector2(0, from)]
-  points.push(new THREE.Vector2(torsoRadiusAt(from), from))
-  for (const [r, y] of TORSO_PROFILE) if (y > from && y < to) points.push(new THREE.Vector2(r, y))
-  points.push(new THREE.Vector2(torsoRadiusAt(to), to))
+  points.push(new THREE.Vector2(torsoRadiusAt(from) * scale(from), from))
+  for (const [r, y] of TORSO_PROFILE) if (y > from && y < to) points.push(new THREE.Vector2(r * scale(y), y))
+  points.push(new THREE.Vector2(torsoRadiusAt(to) * scale(to), to))
   points.push(new THREE.Vector2(0, to))
   const geometry = new THREE.LatheGeometry(points, 20)
   geometry.scale(0.80, 1, 1.30)
@@ -309,6 +352,8 @@ const _nf = new THREE.Vector3()
 const _ns = new THREE.Vector3()
 const _nb = new THREE.Vector3()
 const _bx = new THREE.Vector3()
+const _q = new THREE.Quaternion()
+const Z_UNIT = new THREE.Vector3(0, 0, 1)
 
 /** 매 프레임 계산된 관절 위치 — 디버깅/테스트용으로 노출한다 */
 export interface Joints {
@@ -365,6 +410,8 @@ export class Rig {
   /** 깜빡임에 쓰는 눈 흰자와 눈동자 */
   private eyes: THREE.Mesh[] = []
   private clock = 0
+  /** 체형 — 살집과 머리 모양만 다르고 뼈대는 같다 */
+  private shape: BodyShape
   private blinkT = -1
   private nextBlinkAt = 2.5
   private blinkCount = 0
@@ -387,7 +434,8 @@ export class Rig {
   /**
    * @param seed 보트마다 다른 값을 주면 깜빡임·호흡이 셋이 똑같이 맞물리지 않는다
    */
-  constructor(colors: RigColors, private opacity = 1, private seed = 0) {
+  constructor(colors: RigColors, private opacity = 1, private seed = 0, body: RigBody = 'male') {
+    this.shape = BODY_SHAPES[body]
     this.group.add(this.visualRoot, this.puddleGroup)
     this.nextBlinkAt = 1.5 + (seed % 1) * 2
     this.build(colors)
@@ -417,6 +465,7 @@ export class Rig {
 
   private build(c: RigColors) {
     const g = this.visualRoot
+    const shape = this.shape
 
     // ── 재질 ────────────────────────────────────────────────
     // 피부는 약간 매트하고, 유니폼은 직물의 시인(sheen)을 준다. 선체는 클리어코트로 광택.
@@ -496,26 +545,28 @@ export class Rig {
 
     // 골반은 타원체 — 상자는 허리에서 모서리가 드러나고 앞면이 허벅지 사이로 보인다
     const pelvisGeo = new THREE.SphereGeometry(0.15, 18, 12)
-    pelvisGeo.scale(0.80, 0.55, 1.32)
+    pelvisGeo.scale(0.80, 0.55, shape.pelvisWidth)
     this.pelvis = this.shadowed(new THREE.Mesh(pelvisGeo, shorts))
     g.add(this.pelvis)
 
     this.torsoLower = this.shadowed(new THREE.Mesh(
-      createTorsoSegmentGeometry(0, TORSO_LOWER + SPINE_OVERLAP), jersey,
+      createTorsoSegmentGeometry(0, TORSO_LOWER + SPINE_OVERLAP, shape.torsoScale), jersey,
     ))
     this.torsoUpper = this.shadowed(new THREE.Mesh(
-      createTorsoSegmentGeometry(TORSO_LOWER - SPINE_OVERLAP, TORSO_TOP), jersey,
+      createTorsoSegmentGeometry(TORSO_LOWER - SPINE_OVERLAP, TORSO_TOP, shape.torsoScale), jersey,
     ))
     g.add(this.torsoLower, this.torsoUpper)
 
     // 가슴을 가로지르는 팀 스트라이프 — 몸통이 한 색으로 뭉치지 않는다.
     // 몸통 회전체 반지름(0.142~0.158)에 3mm만 띄워 붙인다 — 더 크면 허공에 뜬 고리가 된다
     const stripeGeo = new THREE.CylinderGeometry(0.161, 0.145, 0.075, 20, 1, true)
-    stripeGeo.scale(0.80, 1, 1.30)
+    // 체형에 따라 몸통이 가늘면 스트라이프도 같이 줄여 허공에 뜨지 않게 한다
+    const stripeScale = shape.torsoScale(TORSO_LOWER + 0.075)
+    stripeGeo.scale(0.80 * stripeScale, 1, 1.30 * stripeScale)
     this.chestStripe = new THREE.Mesh(stripeGeo, this.mat(c.trim === c.jersey ? c.shorts : c.shorts, { roughness: 0.8 }))
     g.add(this.chestStripe)
 
-    this.neck = new THREE.Mesh(createLimbGeometry(0.060, 0.050, 0.14), skin)
+    this.neck = new THREE.Mesh(createLimbGeometry(0.060 * shape.neck, 0.050 * shape.neck, 0.14), skin)
     g.add(this.neck)
 
     this.head = this.buildHead(c, skin, hairMat)
@@ -524,16 +575,18 @@ export class Rig {
     for (let i = 0; i < 2; i++) {
       // 관절에서 만나는 반지름을 맞춘다: 어깨 0.058, 팔꿈치 0.044, 손목 0.034 / 엉덩이 0.086, 무릎 0.062, 발목 0.038
       // 위팔은 가운데(이두·삼두), 아래팔은 팔꿈치 쪽(굴근)이 부푼다.
-      this.upperArm.push(new THREE.Mesh(createLimbGeometry(0.058, 0.044, UPPER_ARM, 0.20, 0.45), skin))
-      this.forearm.push(new THREE.Mesh(createLimbGeometry(0.044, 0.034, FOREARM, 0.18, 0.33), skin))
+      const { arm, leg, bulge } = shape
+      this.upperArm.push(new THREE.Mesh(createLimbGeometry(0.058 * arm, 0.044 * arm, UPPER_ARM, 0.20 * bulge, 0.45), skin))
+      this.forearm.push(new THREE.Mesh(createLimbGeometry(0.044 * arm, 0.034 * arm, FOREARM, 0.18 * bulge, 0.33), skin))
       // 주먹: x = 손등 두께, y = 손목 방향, z = 노 방향
-      const fist = new THREE.Mesh(new RoundedBoxGeometry(0.076, 0.066, 0.090, 2, 0.028), skin)
+      const fistScale = 0.5 + 0.5 * arm
+      const fist = new THREE.Mesh(new RoundedBoxGeometry(0.076 * fistScale, 0.066 * fistScale, 0.090 * fistScale, 2, 0.028 * fistScale), skin)
       this.fists.push(fist)
 
-      this.shortsLegs.push(new THREE.Mesh(createLimbGeometry(0.096, 0.092, 0.21), shorts))
+      this.shortsLegs.push(new THREE.Mesh(createLimbGeometry(0.096 * leg, 0.092 * leg, 0.21), shorts))
       // 허벅지는 앞쪽 중간(대퇴사두), 정강이는 무릎 아래(종아리)가 부푼다
-      this.thigh.push(new THREE.Mesh(createLimbGeometry(0.086, 0.062, THIGH, 0.12, 0.42), skin))
-      this.shin.push(new THREE.Mesh(createLimbGeometry(0.060, 0.038, SHIN, 0.34, 0.26), skin))
+      this.thigh.push(new THREE.Mesh(createLimbGeometry(0.086 * leg, 0.062 * leg, THIGH, 0.12 * bulge, 0.42), skin))
+      this.shin.push(new THREE.Mesh(createLimbGeometry(0.060 * leg, 0.038 * leg, SHIN, 0.34 * bulge, 0.26), skin))
       this.socks.push(new THREE.Mesh(createLimbGeometry(0.045, 0.045, 0.09), this.mat('#f2f4f4', { roughness: 0.9 })))
       this.shoes.push(new THREE.Mesh(
         new RoundedBoxGeometry(0.19, 0.08, 0.105, 2, 0.028), this.mat('#202a36', { roughness: 0.7 }),
@@ -656,6 +709,17 @@ export class Rig {
     nape.rotation.z = -1.05
     head.add(this.shadowed(hair), nape)
 
+    if (this.shape.ponytail) {
+      // 뒤통수 아래에서 묶여 등 쪽으로 늘어진다. 모자를 써도 뒤에서 바로 보인다.
+      const root = new THREE.Vector3(r * 0.78, -r * 0.20, 0)
+      const tip = new THREE.Vector3(r * 1.35, -r * 1.75, 0)
+      const knot = new THREE.Mesh(new THREE.SphereGeometry(r * 0.30, 12, 10), hairMat)
+      knot.position.copy(root)
+      const tail = new THREE.Mesh(createLimbGeometry(r * 0.27, r * 0.14, root.distanceTo(tip)), hairMat)
+      place(tail, root, tip, root.distanceTo(tip))
+      head.add(knot, this.shadowed(tail))
+    }
+
     if (c.cap) {
       const capMat = this.mat(c.cap, { roughness: 0.85 })
       const crown = new THREE.Mesh(
@@ -757,13 +821,16 @@ export class Rig {
     const armReach = lerp(ARM_STRAIGHT, ARM_FINISH, pose.armDraw)
     // 어깨는 캐치에서 손잡이 쪽으로 나가고(견갑골 전인) 피니시에서 뒤로 당겨진다(후인)
     const reach = lerp(-SHOULDER_REACH, SHOULDER_RETRACT, pose.armDraw)
+    // 손이 교차하는 구간(θ≈0)에서 어깨가 기운다. 지난 프레임의 스윕각을 쓴다 — 연속이라 한 프레임 차이는 안 보인다.
+    const cross = Math.cos(this.joints.theta) ** 2
 
     for (let i = 0; i < 2; i++) {
       const side = i === 0 ? 1 : -1
       // 팔 관절은 어깨선 아래 몸통 안쪽에서 시작한다
       const shoulderPt = shoulder.clone().addScaledVector(bodyAxis, -SHOULDER_DROP)
       shoulderPt.x += reach
-      shoulderPt.z = side * SHOULDER_HALF
+      shoulderPt.y += side * SHOULDER_ROLL * cross
+      shoulderPt.z = side * this.shape.shoulderHalf
       this.joints.armRoot[i]!.copy(shoulderPt)
 
       // 왼손(+Z)이 오른손 위로 지나간다. 스택 양은 스윕각에 달렸는데 스윕각은 손 각도로 푸니
@@ -832,13 +899,15 @@ export class Rig {
       const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis)
       const fist = this.fists[i]!
       fist.quaternion.setFromRotationMatrix(_m.makeBasis(xAxis, yAxis, zAxis))
+      // 페더링: 노를 눕힐 때 손목이 떨어져 손등이 앞으로 구른다 (노 축 둘레 회전)
+      fist.quaternion.multiply(_q.setFromAxisAngle(Z_UNIT, -WRIST_DROP * (1 - pose.square)))
       fist.position.copy(handle).addScaledVector(yAxis, 0.012).addScaledVector(dir, -0.01)
 
       // ── 다리 IK: 엉덩이 → 발 ────────────────────────────
-      const hipPt = new THREE.Vector3(hipX, SEAT_Y, side * HIP_HALF)
+      const hipPt = new THREE.Vector3(hipX, SEAT_Y, side * this.shape.hipHalf)
       const footPt = new THREE.Vector3(FOOT.x, FOOT.y, side * FOOT.z)
-      // 무릎은 발 위로 올라가되 살짝 바깥으로 벌어진다
-      const kneePole = new THREE.Vector3(0, 1, side * 0.15).normalize()
+      // 무릎은 발 위로 올라가되 바깥으로 벌어진다 — 캐치에서 더 벌어져 상체가 그 사이로 들어간다
+      const kneePole = new THREE.Vector3(0, 1, side * lerp(KNEE_SPLAY_CATCH, KNEE_SPLAY_FINISH, pose.slide)).normalize()
       const knee = solveIK(hipPt, footPt, THIGH, SHIN, kneePole)
       this.joints.knee[i]!.copy(knee)
       this.joints.foot[i]!.copy(footPt)

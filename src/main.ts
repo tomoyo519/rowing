@@ -12,6 +12,7 @@ import { saveRecord, thinCurve, personalBest, type SessionRecord } from './game/
 import { FeedbackModal } from './ui/feedbackModal'
 import { renderHistory } from './ui/historyScreen'
 import { View } from './three/view'
+import type { RigBody } from './three/rig'
 import { formatSplit, formatSplitShort, formatClock } from './game/physics'
 import { RowingMetronome } from './audio/metronome'
 import { AudioCues } from './audio/cues'
@@ -37,6 +38,20 @@ let session: Session | null = null
 let view: View | null = null
 let selectedCourse: Course = COURSES[0]!
 let selectedTier: PaceTier = PACE_TIERS[1]!
+/** 아바타 체형. 이 브라우저에 저장되어 다음에도 유지된다 */
+const AVATAR_KEY = 'makeRowing.avatar.v1'
+const AVATARS: { id: RigBody; label: string; hint: string }[] = [
+  { id: 'female', label: '여자', hint: '뒤로 묶은 머리' },
+  { id: 'male', label: '남자', hint: '모자' },
+]
+let avatarBody: RigBody = loadAvatarBody()
+
+function loadAvatarBody(): RigBody {
+  try { return localStorage.getItem(AVATAR_KEY) === 'female' ? 'female' : 'male' } catch { return 'male' }
+}
+function saveAvatarBody(body: RigBody) {
+  try { localStorage.setItem(AVATAR_KEY, body) } catch { /* 저장소 미지원 — 이번 세션만 유지 */ }
+}
 let wakeLock: WakeLockSentinel | null = null
 /** 늦게 끝난 화면 잠금 요청이 종료된 레이스의 잠금을 되살리지 않게 하는 세대 번호 */
 let wakeLockGeneration = 0
@@ -216,9 +231,23 @@ $('btn-sim').addEventListener('click', async () => {
 
 // ── 코스 선택 ───────────────────────────────────────────────
 function goCourseSelect() {
+  renderAvatars()
   renderTiers()
   renderCourses()
   show('screen-course')
+}
+
+function renderAvatars() {
+  const el = $('avatars')
+  el.innerHTML = ''
+  for (const a of AVATARS) {
+    const b = document.createElement('button')
+    b.className = 'tier avatar' + (a.id === avatarBody ? ' sel' : '')
+    b.setAttribute('aria-pressed', String(a.id === avatarBody))
+    b.innerHTML = `<b>${a.label}</b><span>${a.hint}</span>`
+    b.addEventListener('click', () => { avatarBody = a.id; saveAvatarBody(a.id); renderAvatars() })
+    el.appendChild(b)
+  }
 }
 
 function renderTiers() {
@@ -400,7 +429,7 @@ async function startRace() {
   renderRaceProfile()
   show('screen-race')
   view?.dispose()
-  view = new View(cv, session)
+  view = new View(cv, session, avatarBody)
   view.resize()
   if (import.meta.env.DEV) (window as unknown as { __rowing: unknown }).__rowing = { session, view }
 

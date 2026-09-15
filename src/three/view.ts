@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { World, type AmbientPresence } from './world'
-import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST } from './rig'
+import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST, type RigBody } from './rig'
 import { projectedDistance } from '../game/courses'
 import { splitToSpeed } from '../game/physics'
 import { StrokeEngine } from '../game/stroke'
@@ -94,17 +94,18 @@ export class View {
   private pace: Rig
   /** 지난 최고 기록이 있을 때만 만든다 */
   private ghost: Rig | null = null
-  private ghostStroke = new StrokeEngine()
+  private ghostStroke = new StrokeEngine(3)
   private ghostSpeed = 0
   private total: number
-  private paceStroke = new StrokeEngine()
+  private paceStroke = new StrokeEngine(2)
   private camShake = 0
   private frameZ = 0
   private turnStrength = 0
   private camIndex = 0
   private path: CoursePath
 
-  constructor(canvas: HTMLCanvasElement, session: Session) {
+  /** @param body 플레이어(와 지난 기록의 고스트) 아바타 체형 */
+  constructor(canvas: HTMLCanvasElement, session: Session, body: RigBody = 'male') {
     this.renderer = new THREE.WebGLRenderer({
       canvas, antialias: true, powerPreference: 'high-performance',
     })
@@ -115,7 +116,8 @@ export class View {
     this.renderer.toneMappingExposure = 1.05
     // 보트·로어·나무가 수면과 강둑에 그림자를 떨어뜨린다. 그림자 카메라는 보트 주변 ±26m만 덮는다.
     this.renderer.shadowMap.enabled = true
-    this.renderer.shadowMap.type = THREE.PCFShadowMap
+    // 부드러운 그림자 가장자리 — 딱딱한 계단 그림자는 장난감처럼 보인다
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
     this.camera = new THREE.PerspectiveCamera(52, 1, 0.1, 500)
 
@@ -124,7 +126,7 @@ export class View {
     this.total = projectedDistance(session.course, session.baseSplit)
     this.path = createCoursePath(session.course.id)
 
-    this.player = new Rig(COLORS_PLAYER)
+    this.player = new Rig(COLORS_PLAYER, 1, 0, body)
     this.world.scene.add(this.player.group)
 
     this.pace = new Rig(COLORS_PACE, 0.82, 1.7)
@@ -135,7 +137,8 @@ export class View {
     this.paceStroke.phase = 0.45
 
     if (session.ghost) {
-      this.ghost = new Rig(COLORS_GHOST, 0.72, 3.9)
+      // 고스트는 지난 나 — 같은 체형이다
+      this.ghost = new Rig(COLORS_GHOST, 0.72, 3.9, body)
       this.world.scene.add(this.ghost.group)
       this.ghostStroke.onSample(25, undefined, 0)
       this.ghostStroke.spm = 25

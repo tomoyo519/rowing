@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { StrokeEngine, catchError } from './stroke'
+import { StrokeEngine, catchError, easePeak } from './stroke'
 
 /** 60fps로 sec초 동안 굴리며 매 프레임 위상을 기록한다. */
 function run(engine: StrokeEngine, sec: number, onFrame?: (i: number) => void) {
@@ -176,5 +176,123 @@ describe('레이트 0 처리와 coast', () => {
     run(e, 4)
     expect(e.spm).toBeLessThan(0.5)
     expect(e.phase).toBeLessThan(0.01)
+  })
+})
+
+describe('사람다운 자세 타이밍', () => {
+  function engineAt(spm: number) {
+    const e = new StrokeEngine()
+    e.onSample(spm, 0, 0); e.update(0.5); e.update(0.5); e.update(0.5)
+    return e
+  }
+
+  it('easePeak은 0에서 1로 단조 증가하고 a=0.5면 easeInOut과 같다', () => {
+    let prev = 0
+    for (let i = 1; i <= 100; i++) {
+      const v = easePeak(i / 100, 0.28)
+      expect(v).toBeGreaterThanOrEqual(prev)
+      prev = v
+    }
+    expect(easePeak(1, 0.28)).toBe(1)
+    expect(easePeak(0.25, 0.5)).toBeCloseTo(2 * 0.25 * 0.25)
+    expect(easePeak(0.75, 0.5)).toBeCloseTo(1 - 2 * 0.25 * 0.25)
+  })
+
+  it.each([20, 26, 36])('%dspm에서 캐치·피니시를 지나도 슬라이드·몸통·팔의 속도가 뛰지 않는다', spm => {
+    const e = engineAt(spm)
+    const N = 1200
+    const rows: number[][] = []
+    for (let i = 0; i <= N; i++) {
+      e.phase = i / N
+      const p = e.pose()
+      rows.push([p.slide, p.bodyAngle, p.armDraw])
+    }
+    // 위상 1과 0은 같은 자세다 — 그래야 순환이 이어진다
+    for (let k = 0; k < 3; k++) expect(rows[N]![k]).toBeCloseTo(rows[0]![k]!, 6)
+    for (let k = 0; k < 3; k++) {
+      const v: number[] = []
+      for (let i = 1; i <= N; i++) v.push(rows[i]![k]! - rows[i - 1]![k]!)
+      let worst = 0
+      for (let i = 0; i < v.length; i++) {
+        const prev = v[(i - 1 + v.length) % v.length]!
+        worst = Math.max(worst, Math.abs(v[i]! - prev))
+      }
+      // 예전 easeOut/easeIn은 캐치에서 0.0075, 피니시에서 0.0116(한 스텝당)씩 튀었다
+      expect(worst).toBeLessThan(0.002)
+    }
+  })
+
+  it('캐치 근처에서 상체가 얼어붙지 않는다 — 슬라이드 끝에 조금 더 뻗고 드라이브 초반에 풀린다', () => {
+    const e = engineAt(26)
+    const df = e.driveFraction
+    e.phase = df + (1 - df) * 0.62
+    const beforeReach = e.pose().bodyAngle
+    e.phase = 0
+    const atCatch = e.pose().bodyAngle
+    e.phase = df * 0.3
+    const hang = e.pose().bodyAngle
+    expect(atCatch).toBeGreaterThan(beforeReach + 0.03)
+    expect(hang).toBeLessThan(atCatch - 0.03)
+  })
+
+  it('스트로크마다 캐치 자세가 조금씩 다르지만 한계 안에 머문다', () => {
+    const e = new StrokeEngine(7)
+    e.onSample(26, 0, 0)
+    const leans = new Set<string>()
+    let prev = e.phase
+    for (let i = 0; i < 60 * 30; i++) {          // 30초 ≈ 13 스트로크
+      e.update(1 / 60)
+      if (e.phase < prev) {
+        const p = e.pose()
+        leans.add(p.bodyAngle.toFixed(3))
+        expect(p.slide).toBeLessThan(0.04)
+        expect(Math.abs(p.bodyAngle - 0.47)).toBeLessThan(0.035)
+      }
+      prev = e.phase
+    }
+    expect(leans.size).toBeGreaterThan(3)
+  })
+
+  it('버릇이 여러 번 바뀐 뒤에도 실제 위상 wrap에서 자세가 이어진다', () => {
+    const e = new StrokeEngine(17)
+    e.onSample(30, 0, 0)
+    let previous = e.pose()
+    let wraps = 0
+
+    // 직접 phase를 놓는 대신 실제 update로 여러 스트로크를 넘겨야 wobble 교체 경계를 검사할 수 있다.
+    for (let i = 0; i < 240 * 30; i++) {
+      e.update(1 / 240)
+      const current = e.pose()
+      if (current.phase < previous.phase) {
+        wraps++
+        expect(Math.abs(current.slide - previous.slide)).toBeLessThan(0.002)
+        expect(Math.abs(current.bodyAngle - previous.bodyAngle)).toBeLessThan(0.002)
+        expect(Math.abs(current.armDraw - previous.armDraw)).toBeLessThan(0.002)
+      }
+      previous = current
+    }
+    expect(wraps).toBeGreaterThan(5)
+  })
+
+  it('같은 seed는 같은 버릇을 내고, 다른 seed는 다르다', () => {
+    const sample = (seed: number) => {
+      const e = new StrokeEngine(seed)
+      e.onSample(26, 0, 0)
+      for (let i = 0; i < 60 * 5; i++) e.update(1 / 60)
+      e.phase = 0
+      return e.pose().bodyAngle
+    }
+    expect(sample(2)).toBe(sample(2))
+    expect(sample(2)).not.toBe(sample(3))
+  })
+
+  it('reset은 버릇도 지운다', () => {
+    const e = new StrokeEngine(5)
+    e.onSample(26, 0, 0)
+    for (let i = 0; i < 60 * 5; i++) e.update(1 / 60)
+    e.reset()
+    const fresh = new StrokeEngine(5)
+    expect(e.pose().bodyAngle).toBe(fresh.pose().bodyAngle)
+    expect(e.pose().slide).toBe(fresh.pose().slide)
   })
 })

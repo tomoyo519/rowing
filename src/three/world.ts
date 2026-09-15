@@ -264,6 +264,7 @@ const LEAF_PALETTES: [string, string][] = [
   ['#8fb85a', '#d9c25a'],   // 버드나무 — 연노랑
 ]
 const TRUNK_COLOR = '#4a3628'
+const WHITE = new THREE.Color('#ffffff')
 const BIRCH_COLOR = '#e8e4da'
 
 const SKIN_TONES = ['#f1c9a5', '#dfa980', '#c08557', '#8d5a3c']
@@ -473,24 +474,67 @@ export function createSceneryLayout(courseId: string): SceneryLayout {
 
 /**
  * 정점을 중심에서 불규칙하게 밀고 당겨 매끈한 구·원뿔의 도형 티를 없앤다.
- * 위치를 양자화해 해시하므로 구의 이음새나 극점처럼 같은 자리에 겹친 정점은
+ * 변위는 위치의 매끄러운 함수(저주파 사인 곱)라 이웃 정점이 함께 움직여 울퉁불퉁한 덩어리가 되고,
+ * 정점마다 따로 뽑은 난수처럼 면마다 각이 지지 않는다. 같은 자리에 겹친 정점(구의 이음새·극점)은
  * 같은 값을 받아 틈이 벌어지지 않는다. 원점 기준으로 스케일하니 이동 전에 불러야 한다.
  */
 function roughen(geometry: THREE.BufferGeometry, amount: number, seed: number) {
   const position = geometry.getAttribute('position') as THREE.BufferAttribute
+  const a = (seed * 0.731) % 6.283, b = (seed * 1.317) % 6.283, c = (seed * 2.113) % 6.283
+  geometry.computeBoundingSphere()
+  // 덩어리 크기는 반지름의 절반쯤 — 큰 수관은 큰 덩어리, 덤불은 작은 덩어리
+  const f = 7.5 / Math.max(0.3, geometry.boundingSphere!.radius)
   for (let i = 0; i < position.count; i++) {
     const x = position.getX(i)
     const y = position.getY(i)
     const z = position.getZ(i)
+    const n1 = Math.sin(x * f + a) * Math.sin(y * f * 1.3 + b) * Math.sin(z * f * 0.9 + c)
+    const n2 = Math.sin(x * f * 2.3 + b) * Math.sin(y * f * 1.9 + c) * Math.sin(z * f * 2.7 + a)
+    // 아주 작은 정점별 요철 — 잎 표면의 잔결. 크면 다시 각이 진다.
     const key = `${seed}:${Math.round(x * 40)}:${Math.round(y * 40)}:${Math.round(z * 40)}`
-    const h = hashString(key) / 4294967296
-    // 두 옥타브: 큰 울퉁불퉁함 + 잔주름
-    const h2 = hashString(`${key}:fine`) / 4294967296
-    const k = 1 + (h - 0.5) * 2 * amount + (h2 - 0.5) * amount * 0.5
+    const speck = hashString(key) / 4294967296 - 0.5
+    const k = 1 + amount * (n1 * 1.1 + n2 * 0.45) + speck * amount * 0.25
     position.setXYZ(i, x * k, y * k, z * k)
   }
   position.needsUpdate = true
   geometry.computeVertexNormals()
+  return geometry
+}
+
+/**
+ * 수관 정점을 위는 밝고 아래·안쪽은 어둡게 칠한다. 재질 색은 그대로 두고 배율만 굽는다 —
+ * 날씨·계절에 따른 잎색 변화는 재질이 맡는다. 정점마다 작은 얼룩을 섞어 매끈한 그라데이션이 아니라 잎처럼 보이게 한다.
+ */
+function bakeCanopyShade(geometry: THREE.BufferGeometry, seed: number, contrast = 0.32) {
+  geometry.computeBoundingBox()
+  const box = geometry.boundingBox!
+  const position = geometry.getAttribute('position') as THREE.BufferAttribute
+  const colors = new Float32Array(position.count * 3)
+  const span = Math.max(1e-3, box.max.y - box.min.y)
+  const radius = Math.max(1e-3, Math.max(box.max.x - box.min.x, box.max.z - box.min.z) / 2)
+  const cx = (box.max.x + box.min.x) / 2
+  const cz = (box.max.z + box.min.z) / 2
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i), y = position.getY(i), z = position.getZ(i)
+    const height = (y - box.min.y) / span
+    // 바깥쪽 잎이 안쪽보다 밝다 (안쪽은 잎에 가려 그늘)
+    const outward = Math.min(1, Math.hypot(x - cx, z - cz) / radius)
+    const key = `${seed}:${Math.round(x * 25)}:${Math.round(y * 25)}:${Math.round(z * 25)}`
+    const jitter = (hashString(key) / 4294967296 - 0.5) * 0.14
+    const shade = 1 - contrast * (1 - height) - 0.1 * (1 - outward) + jitter
+    colors[i * 3] = shade
+    colors[i * 3 + 1] = shade
+    colors[i * 3 + 2] = shade * 0.95
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  return geometry
+}
+
+/** vertexColors 재질에 쓰는 지오메트리에 단색 배율을 채운다 */
+function fillVertexColor(geometry: THREE.BufferGeometry, value: number) {
+  const count = geometry.getAttribute('position').count
+  const colors = new Float32Array(count * 3).fill(value)
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   return geometry
 }
 
@@ -507,14 +551,14 @@ function createTree(
   const leafParts: THREE.BufferGeometry[] = []
   let seed = Math.round(phase * 1000)
   // 잎 덩어리: 세분화를 올리고 표면을 흐트러뜨려 부드럽고 울퉁불퉁한 수관을 만든다
-  const sphere = (r: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1, rough = 0.17) => {
-    const g = roughen(new THREE.SphereGeometry(r, 12, 9), rough, seed++)
+  const sphere = (r: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1, rough = 0.09) => {
+    const g = roughen(new THREE.SphereGeometry(r, 22, 15), rough, seed++)
     g.scale(sx, sy, sz)
     g.translate(x, y, z)
     leafParts.push(g)
   }
   const cone = (r: number, h: number, y: number, rough = 0.12) => {
-    const g = roughen(new THREE.ConeGeometry(r, h, 11, 3), rough, seed++)
+    const g = roughen(new THREE.ConeGeometry(r, h, 16, 4), rough, seed++)
     g.translate(0, y, 0)
     leafParts.push(g)
   }
@@ -560,10 +604,10 @@ function createTree(
       stem(0.08, 0.15, 4.6, 0.09)
       trunkParts.push(tubeBetween(v(0, 3.0, 0), v(0.9, 4.4, 0.3), 0.05, 0.03))
       trunkParts.push(tubeBetween(v(0, 3.6, 0), v(-0.7, 4.8, -0.2), 0.04, 0.025))
-      sphere(1.05, 0, 4.7, 0, 0.85, 1.25, 0.85, 0.2)
-      sphere(0.9, 0.75, 5.4, 0.25, 0.8, 1.15, 0.8, 0.2)
-      sphere(0.85, -0.65, 5.2, -0.3, 0.8, 1.1, 0.8, 0.2)
-      sphere(0.6, 0.2, 6.1, -0.1, 0.8, 1.0, 0.8, 0.2)
+      sphere(1.05, 0, 4.7, 0, 0.85, 1.25, 0.85, 0.12)
+      sphere(0.9, 0.75, 5.4, 0.25, 0.8, 1.15, 0.8, 0.12)
+      sphere(0.85, -0.65, 5.2, -0.3, 0.8, 1.1, 0.8, 0.12)
+      sphere(0.6, 0.2, 6.1, -0.1, 0.8, 1.0, 0.8, 0.12)
       break
     }
     case 'pine': {
@@ -572,20 +616,20 @@ function createTree(
       const tiers: [number, number, number][] = [
         [2.0, 2.2, 2.8], [1.7, 2.1, 3.9], [1.4, 2.0, 4.9], [1.1, 1.9, 5.8], [0.75, 1.7, 6.6],
       ]
-      for (const [r, h, y] of tiers) cone(r * (1 + wobble * 0.08), h, y, 0.14)
+      for (const [r, h, y] of tiers) cone(r * (1 + wobble * 0.08), h, y, 0.10)
       break
     }
     case 'poplar': {
       stem(0.1, 0.2, 2.6, 0.04)
-      sphere(4.2, 0, 5.4, 0, 0.36, 1.0, 0.36, 0.12)
-      sphere(2.4, 0.15, 3.3, 0, 0.5, 0.7, 0.5, 0.15)
-      sphere(1.6, -0.1, 8.2, 0, 0.55, 0.9, 0.55, 0.15)
+      sphere(4.2, 0, 5.4, 0, 0.36, 1.0, 0.36, 0.08)
+      sphere(2.4, 0.15, 3.3, 0, 0.5, 0.7, 0.5, 0.09)
+      sphere(1.6, -0.1, 8.2, 0, 0.55, 0.9, 0.55, 0.09)
       break
     }
     case 'willow': {
       stem(0.26, 0.46, 2.4, 0.1)
-      sphere(2.1, wobble * 0.3, 3.9, 0, 1.15, 0.7, 1.15, 0.14)
-      sphere(1.4, -wobble * 0.5, 4.6, 0.5, 1.0, 0.7, 1.0, 0.14)
+      sphere(2.1, wobble * 0.3, 3.9, 0, 1.15, 0.7, 1.15, 0.09)
+      sphere(1.4, -wobble * 0.5, 4.6, 0.5, 1.0, 0.7, 1.0, 0.09)
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * Math.PI * 2 + phase
         const r = 2.0 + Math.sin(a * 3) * 0.25
@@ -610,7 +654,8 @@ function createTree(
   }
 
   const trunkMesh = new THREE.Mesh(mergePlain(trunkParts), trunkMaterial)
-  const leafMesh = new THREE.Mesh(mergePlain(leafParts), leaf)
+  // 위쪽 잎은 햇빛을 받아 밝고 아래·안쪽은 그늘져 어둡다 — 도형 덩어리가 잎 무더기로 읽히는 가장 큰 차이
+  const leafMesh = new THREE.Mesh(bakeCanopyShade(mergePlain(leafParts), Math.round(phase * 1000), 0.36), leaf)
   trunkMesh.castShadow = true
   leafMesh.castShadow = true
   leafMesh.name = 'foliage'
@@ -628,55 +673,84 @@ interface SpectatorSpec {
   shirt: string
   trousers: string
   hatColor: string
+  /** 0 짧은 머리, 1 어깨까지 긴 머리, 2 뒤로 묶은 머리 */
+  hairStyle?: number
+  /** 0 티셔츠+바지, 1 재킷+바지, 2 원피스 */
+  outfit?: number
 }
 
-/** 포즈·모자·피부·옷이 다른 응원객. 정점 색을 구워 메시 하나로 만든다. */
+/**
+ * 포즈·모자·피부·옷·머리 모양이 다른 응원객. 정점 색을 구워 메시 하나로 만든다.
+ * 몸통은 가슴·허리·골반 세 마디라 통나무가 아니라 사람 실루엣이고, 머리는 계란형에 턱·귀가 있다.
+ * 로컬 -Z가 강 쪽(얼굴 방향)이다.
+ */
 function createSpectatorGeometry(spec: SpectatorSpec) {
   const parts: THREE.BufferGeometry[] = []
   const sitting = spec.pose === 'sit'
   const lift = sitting ? -0.46 : 0
   const hipY = 0.86 + lift
-  const shoulderY = 1.30 + lift
-  const headY = 1.60 + lift
+  const shoulderY = 1.32 + lift
+  const headY = 1.63 + lift
+  const hairStyle = spec.hairStyle ?? 0
+  const outfit = spec.outfit ?? 0
+  const dress = outfit === 2 && !sitting
+  const jacket = outfit === 1
+  const darker = (hex: string, k: number) => '#' + new THREE.Color(hex).multiplyScalar(k).getHexString()
+  const jacketColor = darker(spec.shirt, 0.66)
+  const top = jacket ? jacketColor : spec.shirt
+  const lower = dress ? spec.shirt : spec.trousers
 
-  // 몸통 — 어깨가 넓고 허리가 좁다
-  parts.push(paint(new THREE.CylinderGeometry(0.19, 0.15, 0.56, 10), spec.shirt, at(0, hipY + 0.28, 0)))
-  parts.push(paint(new THREE.SphereGeometry(0.19, 10, 8), spec.shirt, g => {
-    g.scale(1, 0.55, 0.8); g.translate(0, shoulderY - 0.02, 0)
-  }))
-  parts.push(paint(new THREE.CylinderGeometry(0.055, 0.06, 0.12, 8), spec.skin, at(0, shoulderY + 0.06, 0)))
-  // 머리
-  parts.push(paint(new THREE.SphereGeometry(0.135, 14, 11), spec.skin, g => {
-    g.scale(1, 1.12, 0.92); g.translate(0, headY, 0)
-  }))
-  parts.push(paint(new THREE.ConeGeometry(0.02, 0.05, 5), spec.skin, at(0, headY - 0.01, -0.135, 0, 0, -Math.PI / 2)))
-  // 머리카락 — 이마를 드러낸 캡
+  // 몸통: 가슴은 넓고 허리는 잘록하며 골반이 다시 넓다
+  parts.push(paint(new THREE.CylinderGeometry(0.175, 0.13, 0.30, 12), top, at(0, shoulderY - 0.17, 0)))
+  parts.push(paint(new THREE.CylinderGeometry(0.13, 0.155, 0.20, 12), dress ? spec.shirt : top, at(0, hipY + 0.10, 0)))
+  parts.push(paint(new THREE.SphereGeometry(0.158, 12, 9), lower, g => { g.scale(1, 0.6, 0.85); g.translate(0, hipY, 0) }))
+  // 어깨선 — 팔이 몸통 옆에 꽂히지 않고 어깨에서 이어진다
+  parts.push(paint(new THREE.SphereGeometry(0.18, 12, 9), top, g => { g.scale(1.06, 0.5, 0.8); g.translate(0, shoulderY - 0.02, 0) }))
+  if (jacket) {
+    // 재킷 앞섶 사이로 안에 입은 셔츠가 보인다
+    parts.push(paint(new THREE.BoxGeometry(0.08, 0.24, 0.02), spec.shirt, at(0, shoulderY - 0.15, -0.165)))
+  }
+  // 목
+  parts.push(paint(new THREE.CylinderGeometry(0.048, 0.058, 0.13, 8), spec.skin, at(0, shoulderY + 0.05, 0)))
+  // 머리: 계란형 두개골 + 턱 + 코 + 귀
+  parts.push(paint(new THREE.SphereGeometry(0.12, 16, 12), spec.skin, g => { g.scale(0.94, 1.12, 0.96); g.translate(0, headY, 0) }))
+  parts.push(paint(new THREE.SphereGeometry(0.078, 10, 8), spec.skin, g => { g.scale(1, 0.8, 0.92); g.translate(0, headY - 0.09, -0.012) }))
+  parts.push(paint(new THREE.ConeGeometry(0.017, 0.045, 5), spec.skin, at(0, headY - 0.012, -0.12, 0, 0, -Math.PI / 2)))
+  for (const s of [1, -1]) {
+    parts.push(paint(new THREE.SphereGeometry(0.02, 6, 5), spec.skin, g => { g.scale(0.6, 1, 0.8); g.translate(s * 0.113, headY - 0.012, 0.01) }))
+  }
+  // 머리카락 — 이마를 드러낸 캡. 긴 머리는 뒤통수에서 어깨까지, 묶은 머리는 뒤통수에 매듭.
   parts.push(paint(
-    new THREE.SphereGeometry(0.142, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.58), spec.hair, g => {
-      g.scale(1, 1.1, 0.95); g.rotateX(0.3); g.translate(0, headY + 0.03, 0.01)
+    new THREE.SphereGeometry(0.128, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.58), spec.hair, g => {
+      g.scale(0.96, 1.12, 0.98); g.rotateX(0.3); g.translate(0, headY + 0.035, 0.01)
     },
   ))
+  if (hairStyle === 1) {
+    parts.push(paint(new THREE.SphereGeometry(0.11, 12, 10), spec.hair, g => { g.scale(0.95, 1.9, 0.62); g.translate(0, headY - 0.12, 0.085) }))
+  } else if (hairStyle === 2) {
+    parts.push(paint(new THREE.SphereGeometry(0.052, 10, 8), spec.hair, at(0, headY + 0.05, 0.115)))
+  }
   if (spec.hat === 1) {
     // 야구 모자
     parts.push(paint(
-      new THREE.SphereGeometry(0.15, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), spec.hatColor,
-      g => { g.scale(1, 0.85, 0.95); g.translate(0, headY + 0.05, 0) },
+      new THREE.SphereGeometry(0.138, 16, 9, 0, Math.PI * 2, 0, Math.PI * 0.5), spec.hatColor,
+      g => { g.scale(1, 0.85, 0.98); g.translate(0, headY + 0.055, 0) },
     ))
-    parts.push(paint(new THREE.CircleGeometry(0.11, 10, Math.PI, Math.PI), spec.hatColor, g => {
-      g.rotateX(-Math.PI / 2); g.rotateY(Math.PI); g.translate(0, headY + 0.07, -0.11)
+    parts.push(paint(new THREE.CircleGeometry(0.105, 10, Math.PI, Math.PI), spec.hatColor, g => {
+      g.rotateX(-Math.PI / 2); g.rotateY(Math.PI); g.translate(0, headY + 0.075, -0.105)
     }))
   } else if (spec.hat === 2) {
     // 챙 넓은 모자
-    parts.push(paint(new THREE.CylinderGeometry(0.11, 0.12, 0.14, 12), spec.hatColor, at(0, headY + 0.14, 0)))
-    parts.push(paint(new THREE.CylinderGeometry(0.27, 0.27, 0.02, 14), spec.hatColor, at(0, headY + 0.08, 0)))
+    parts.push(paint(new THREE.CylinderGeometry(0.1, 0.112, 0.13, 12), spec.hatColor, at(0, headY + 0.15, 0)))
+    parts.push(paint(new THREE.CylinderGeometry(0.26, 0.26, 0.018, 16), spec.hatColor, at(0, headY + 0.095, 0)))
   }
 
-  // 팔: 포즈마다 팔꿈치·손 위치가 다르다. 윗팔은 소매, 아랫팔은 맨살.
+  // 팔: 포즈마다 팔꿈치·손 위치가 다르다. 윗팔은 소매, 아랫팔은 맨살(재킷이면 소매).
   const arm = (side: number, elbow: THREE.Vector3, hand: THREE.Vector3) => {
-    const shoulder = v(side * 0.17, shoulderY - 0.02, 0)
-    parts.push(paint(tubeBetween(shoulder, elbow, 0.06, 0.05), spec.shirt))
-    parts.push(paint(tubeBetween(elbow, hand, 0.05, 0.04), spec.skin))
-    parts.push(paint(new THREE.SphereGeometry(0.048, 8, 6), spec.skin, at(hand.x, hand.y, hand.z)))
+    const shoulder = v(side * 0.17, shoulderY - 0.03, 0)
+    parts.push(paint(tubeBetween(shoulder, elbow, 0.052, 0.045), top))
+    parts.push(paint(tubeBetween(elbow, hand, 0.044, 0.036), jacket ? jacketColor : spec.skin))
+    parts.push(paint(new THREE.SphereGeometry(0.042, 8, 6), spec.skin, g => { g.scale(0.8, 1.1, 1); g.translate(hand.x, hand.y, hand.z) }))
   }
   switch (spec.pose) {
     case 'cheer':
@@ -700,8 +774,8 @@ function createSpectatorGeometry(spec: SpectatorSpec) {
   // 다리
   if (sitting) {
     for (const s of [1, -1]) {
-      parts.push(paint(tubeBetween(v(s * 0.09, hipY, 0), v(s * 0.1, hipY - 0.02, -0.42), 0.075, 0.065), spec.trousers))
-      parts.push(paint(tubeBetween(v(s * 0.1, hipY - 0.02, -0.42), v(s * 0.1, 0.06, -0.44), 0.06, 0.05), spec.trousers))
+      parts.push(paint(tubeBetween(v(s * 0.09, hipY, 0), v(s * 0.1, hipY - 0.02, -0.42), 0.072, 0.062), spec.trousers))
+      parts.push(paint(tubeBetween(v(s * 0.1, hipY - 0.02, -0.42), v(s * 0.1, 0.06, -0.44), 0.058, 0.048), spec.trousers))
       parts.push(paint(new THREE.BoxGeometry(0.11, 0.07, 0.24), '#2b2b2f', at(s * 0.1, 0.035, -0.5)))
     }
     // 앉을 의자
@@ -709,9 +783,19 @@ function createSpectatorGeometry(spec: SpectatorSpec) {
     for (const s of [1, -1]) {
       parts.push(paint(new THREE.BoxGeometry(0.05, hipY - 0.15, 0.05), '#3b3431', at(s * 0.27, (hipY - 0.15) / 2, 0.02)))
     }
+  } else if (dress) {
+    // 치마는 골반에서 무릎까지 퍼지고 그 아래는 맨다리
+    parts.push(paint(new THREE.CylinderGeometry(0.16, 0.25, 0.48, 14, 1, true), spec.shirt, at(0, hipY - 0.22, 0)))
+    parts.push(paint(new THREE.CircleGeometry(0.25, 14), spec.shirt, g => { g.rotateX(Math.PI / 2); g.translate(0, hipY - 0.46, 0) }))
+    for (const s of [1, -1]) {
+      parts.push(paint(tubeBetween(v(s * 0.08, hipY - 0.3, 0), v(s * 0.1, 0.08, 0), 0.058, 0.045), spec.skin))
+      parts.push(paint(new THREE.BoxGeometry(0.11, 0.06, 0.24), '#2b2b2f', at(s * 0.1, 0.03, -0.04)))
+    }
   } else {
     for (const s of [1, -1]) {
-      parts.push(paint(tubeBetween(v(s * 0.08, hipY, 0), v(s * 0.11, 0.08, 0), 0.075, 0.06), spec.trousers))
+      // 허벅지가 굵고 발목이 가늘다. 무릎에서 한 번 꺾여 막대가 아니라 다리로 읽힌다.
+      parts.push(paint(tubeBetween(v(s * 0.08, hipY, 0), v(s * 0.1, hipY - 0.42, -0.02), 0.074, 0.06), spec.trousers))
+      parts.push(paint(tubeBetween(v(s * 0.1, hipY - 0.42, -0.02), v(s * 0.11, 0.08, 0), 0.06, 0.05), spec.trousers))
       parts.push(paint(new THREE.BoxGeometry(0.12, 0.07, 0.26), '#2b2b2f', at(s * 0.11, 0.035, -0.04)))
     }
   }
@@ -796,38 +880,115 @@ function createHeronGeometry() {
 
 // ── 소품 ────────────────────────────────────────────────────
 
+/** 창: 흰 틀 안에 유리, 아래에 창턱. 유리는 하늘색을 조금 띤 어두운 파랑이라 반사처럼 읽힌다. */
+function pushWindow(parts: THREE.BufferGeometry[], x: number, y: number, z: number, w = 0.8, h = 0.9, sill = true) {
+  parts.push(paint(new THREE.BoxGeometry(w + 0.16, h + 0.16, 0.06), '#eae4d8', at(x, y, z)))
+  parts.push(paint(new THREE.BoxGeometry(w, h, 0.08), '#3f6a87', at(x, y, z - 0.02)))
+  // 창살
+  parts.push(paint(new THREE.BoxGeometry(0.04, h, 0.1), '#eae4d8', at(x, y, z - 0.03)))
+  parts.push(paint(new THREE.BoxGeometry(w, 0.04, 0.1), '#eae4d8', at(x, y, z - 0.03)))
+  if (sill) parts.push(paint(new THREE.BoxGeometry(w + 0.3, 0.07, 0.16), '#d9d2c4', at(x, y - h / 2 - 0.06, z - 0.05)))
+}
+
+/** 박공지붕(∧). 벽보다 처마만큼 튀어나오고 양 끝 박공은 벽색으로 막는다. */
+function pushGableRoof(parts: THREE.BufferGeometry[], width: number, depth: number, height: number, eaveY: number, overhang: number, roof: string, wall: string) {
+  const hw = width / 2 + overhang, hd = depth / 2 + overhang
+  const lo = eaveY - 0.05, hi = eaveY + height
+  // 두 경사면 — 두께가 있어 처마 끝이 판으로 보인다
+  for (const side of [1, -1]) {
+    const a = [-hw, lo, side * hd]
+    const b = [hw, lo, side * hd]
+    const c = [hw, hi, 0]
+    const d = [-hw, hi, 0]
+    // side=-1은 반대 winding이어야 법선이 위·바깥을 향한다. 밑면은 다시 뒤집어 아래에서 보이게 한다.
+    const topOrder = side > 0 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]
+    const underOrder = [topOrder[0]!, topOrder[2]!, topOrder[1]!, topOrder[3]!, topOrder[5]!, topOrder[4]!]
+    const makePlane = (order: number[][]) => {
+      const plane = new THREE.BufferGeometry()
+      plane.setAttribute('position', new THREE.BufferAttribute(new Float32Array(order.flat()), 3))
+      plane.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(12), 2))   // 다른 부품과 속성 수를 맞춰야 합쳐진다
+      plane.computeVertexNormals()
+      return plane
+    }
+    parts.push(paint(makePlane(topOrder), roof))
+    const under = makePlane(underOrder)
+    under.translate(0, -0.12, 0)
+    parts.push(paint(under, '#5a3a2e'))
+  }
+  // 용마루
+  parts.push(paint(new THREE.BoxGeometry(width + overhang * 2 + 0.1, 0.12, 0.28), '#5a3a2e', at(0, hi, 0)))
+  // 박공(벽 삼각형)
+  for (const side of [1, -1]) {
+    const tri = new THREE.BufferGeometry()
+    const w = width / 2
+    const verts = new Float32Array([
+      -w * side, eaveY, side * depth / 2, w * side, eaveY, side * depth / 2, 0, hi - 0.06, side * depth / 2,
+    ])
+    tri.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+    tri.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(6), 2))
+    tri.computeVertexNormals()
+    parts.push(paint(tri, wall))
+  }
+}
+
 function createCottageGeometry(wall: string) {
   const parts: THREE.BufferGeometry[] = []
   parts.push(paint(new THREE.BoxGeometry(3.8, 2.7, 3.2), wall, at(0, 1.35, 0)))
-  parts.push(paint(new THREE.ConeGeometry(3.0, 1.8, 4), '#8f4f3f', at(0, 3.58, 0, Math.PI / 4)))
-  parts.push(paint(new THREE.BoxGeometry(0.72, 1.45, 0.08), '#3c3431', at(0, 0.73, -1.63)))
-  parts.push(paint(new THREE.BoxGeometry(0.42, 1.25, 0.42), '#4b3f3a', at(0.9, 3.65, 0.35)))
-  for (const x of [-1.2, 1.2]) parts.push(paint(new THREE.BoxGeometry(0.7, 0.7, 0.08), '#5a8db0', at(x, 1.5, -1.63)))
-  for (const x of [-1.25, 1.25]) parts.push(paint(new THREE.BoxGeometry(0.9, 0.25, 0.35), '#c94f3d', at(x, 1.06, -1.7)))
+  // 돌 기단 — 벽이 잔디에 바로 꽂히지 않는다
+  parts.push(paint(new THREE.BoxGeometry(3.95, 0.35, 3.35), '#8a8378', at(0, 0.17, 0)))
+  pushGableRoof(parts, 3.8, 3.2, 1.5, 2.7, 0.35, '#8f4f3f', wall)
+  // 문: 틀 + 문짝 + 계단
+  parts.push(paint(new THREE.BoxGeometry(0.9, 1.6, 0.06), '#eae4d8', at(0, 0.8 + 0.17, -1.62)))
+  parts.push(paint(new THREE.BoxGeometry(0.72, 1.45, 0.08), '#3c3431', at(0, 0.73 + 0.17, -1.64)))
+  parts.push(paint(new THREE.BoxGeometry(1.2, 0.17, 0.5), '#8a8378', at(0, 0.085, -1.8)))
+  // 굴뚝 + 갓
+  parts.push(paint(new THREE.BoxGeometry(0.42, 1.5, 0.42), '#4b3f3a', at(0.9, 3.6, 0.35)))
+  parts.push(paint(new THREE.BoxGeometry(0.52, 0.12, 0.52), '#3a302c', at(0.9, 4.38, 0.35)))
+  for (const x of [-1.2, 1.2]) pushWindow(parts, x, 1.55, -1.62, 0.7, 0.7)
+  for (const x of [-1.25, 1.25]) parts.push(paint(new THREE.BoxGeometry(0.9, 0.25, 0.35), '#c94f3d', at(x, 1.08, -1.72)))
+  // 옆면 창
+  for (const side of [1, -1]) {
+    parts.push(paint(new THREE.BoxGeometry(0.06, 0.86, 0.86), '#eae4d8', at(side * 1.92, 1.55, 0.3)))
+    parts.push(paint(new THREE.BoxGeometry(0.08, 0.7, 0.7), '#3f6a87', at(side * 1.93, 1.55, 0.3)))
+  }
   return mergeParts(parts)
 }
 
 /** 강변에서 확실히 실루엣이 읽히는 큰 저택. */
 function createManorGeometry(wall: string) {
   const parts: THREE.BufferGeometry[] = []
+  const trim = '#e9e3d6'
   parts.push(paint(new THREE.BoxGeometry(10.5, 5.4, 6.2), wall, at(0, 2.7, 0)))
   parts.push(paint(new THREE.BoxGeometry(4.0, 4.3, 5.2), wall, at(-6.5, 2.15, 0.25)))
   parts.push(paint(new THREE.BoxGeometry(4.0, 4.3, 5.2), wall, at(6.5, 2.15, 0.25)))
-  parts.push(paint(new THREE.ConeGeometry(7.1, 3.0, 4), '#6f4535', at(0, 6.75, 0, Math.PI / 4)))
-  parts.push(paint(new THREE.ConeGeometry(3.8, 2.5, 4), '#6f4535', at(-6.5, 5.55, 0, Math.PI / 4)))
-  parts.push(paint(new THREE.ConeGeometry(3.8, 2.5, 4), '#6f4535', at(6.5, 5.55, 0, Math.PI / 4)))
-  parts.push(paint(new THREE.BoxGeometry(1.35, 2.6, 0.14), '#3c3431', at(0, 1.3, -3.17)))
+  // 기단과 층간 띠, 처마 밑 코니스 — 큰 상자가 건물로 읽히게 하는 수평선들
+  parts.push(paint(new THREE.BoxGeometry(17.2, 0.45, 6.6), '#8a8378', at(0, 0.22, 0.2)))
+  parts.push(paint(new THREE.BoxGeometry(10.7, 0.16, 6.4), trim, at(0, 2.85, 0)))
+  parts.push(paint(new THREE.BoxGeometry(10.9, 0.28, 6.6), trim, at(0, 5.32, 0)))
+  for (const x of [-6.5, 6.5]) parts.push(paint(new THREE.BoxGeometry(4.3, 0.24, 5.5), trim, at(x, 4.25, 0.25)))
+  // 모임지붕(피라미드)은 그대로, 처마가 벽보다 넓다
+  parts.push(paint(new THREE.ConeGeometry(7.4, 3.0, 4), '#6f4535', at(0, 6.9, 0, Math.PI / 4)))
+  parts.push(paint(new THREE.ConeGeometry(4.0, 2.5, 4), '#6f4535', at(-6.5, 5.6, 0.25, Math.PI / 4)))
+  parts.push(paint(new THREE.ConeGeometry(4.0, 2.5, 4), '#6f4535', at(6.5, 5.6, 0.25, Math.PI / 4)))
+  // 현관: 문틀 + 문 + 계단
+  parts.push(paint(new THREE.BoxGeometry(1.6, 2.8, 0.1), trim, at(0, 1.4 + 0.22, -3.16)))
+  parts.push(paint(new THREE.BoxGeometry(1.35, 2.6, 0.14), '#3c3431', at(0, 1.3 + 0.22, -3.18)))
+  parts.push(paint(new THREE.BoxGeometry(3.2, 0.22, 1.4), '#8a8378', at(0, 0.11, -3.9)))
   for (const [x, y] of [
-    [-4.0, 1.55], [-2.2, 1.55], [2.2, 1.55], [4.0, 1.55],
-    [-4.0, 3.75], [-2.0, 3.75], [0, 3.75], [2.0, 3.75], [4.0, 3.75],
-    [-6.5, 2.25], [6.5, 2.25],
+    [-4.0, 1.7], [-2.2, 1.7], [2.2, 1.7], [4.0, 1.7],
+    [-4.0, 4.0], [-2.0, 4.0], [0, 4.0], [2.0, 4.0], [4.0, 4.0],
+    [-6.5, 2.4], [6.5, 2.4],
   ] as const) {
-    parts.push(paint(new THREE.BoxGeometry(0.82, 0.95, 0.12), '#31566d', at(x, y, -3.19)))
+    const z = Math.abs(x) > 6 ? -2.36 : -3.17
+    pushWindow(parts, x, y, z, 0.82, 1.05)
   }
-  for (const x of [-3.4, 3.4]) parts.push(paint(new THREE.BoxGeometry(0.6, 1.4, 0.6), '#4b3f3a', at(x, 8.0, 0.8)))
-  // 현관 기둥
-  for (const x of [-1.1, 1.1]) parts.push(paint(new THREE.CylinderGeometry(0.16, 0.18, 2.7, 8), '#e9e3d6', at(x, 1.35, -3.6)))
-  parts.push(paint(new THREE.BoxGeometry(3.0, 0.3, 1.2), '#e9e3d6', at(0, 2.8, -3.6)))
+  for (const x of [-3.4, 3.4]) {
+    parts.push(paint(new THREE.BoxGeometry(0.6, 1.6, 0.6), '#4b3f3a', at(x, 8.1, 0.8)))
+    parts.push(paint(new THREE.BoxGeometry(0.72, 0.12, 0.72), '#3a302c', at(x, 8.95, 0.8)))
+  }
+  // 현관 기둥과 포치 지붕
+  for (const x of [-1.1, 1.1]) parts.push(paint(new THREE.CylinderGeometry(0.16, 0.18, 2.7, 10), trim, at(x, 1.35 + 0.22, -3.6)))
+  parts.push(paint(new THREE.BoxGeometry(3.0, 0.3, 1.2), trim, at(0, 3.0, -3.6)))
   return mergeParts(parts)
 }
 
@@ -1076,6 +1237,7 @@ function createBankRibbon(
   const start = -500
   const count = Math.ceil((maxStation - start) / BANK_STEP) + 1
   const positions = new Float32Array(count * 3 * 3)
+  const colors = new Float32Array(count * 3 * 3)
   const indices: number[] = []
 
   for (let i = 0; i < count; i++) {
@@ -1086,6 +1248,12 @@ function createBankRibbon(
     positions.set([inner.x, 0.85, inner.z], offset)
     positions.set([outer.x, 0.85, outer.z], offset + 3)
     positions.set([inner.x, -0.35, inner.z], offset + 6)
+    // 잔디는 군데군데 마르고 짙다. 물가 절벽은 젖은 흙이라 어둡고 붉다.
+    const g1 = grassShade(station, side * 3)
+    const g2 = grassShade(station + 7, side * 5)
+    colors.set([g1, g1, g1 * 0.96], offset)
+    colors.set([g2, g2, g2 * 0.96], offset + 3)
+    colors.set([0.50, 0.42, 0.34], offset + 6)
 
     if (i === count - 1) continue
     const a = i * 3
@@ -1100,12 +1268,20 @@ function createBankRibbon(
 
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   geometry.setIndex(indices)
   geometry.computeVertexNormals()
   geometry.computeBoundingSphere()
   const mesh = new THREE.Mesh(geometry, material)
   mesh.receiveShadow = true
   return mesh
+}
+
+/** 강둑 잔디의 밝기 배율 — 느린 굴곡 두 개에 작은 얼룩을 섞는다 */
+function grassShade(station: number, salt: number) {
+  const slow = Math.sin(station * 0.045 + salt) * Math.sin(station * 0.011 + salt * 0.7)
+  const speck = hashString(`grass:${Math.round(station)}:${salt}`) / 4294967296 - 0.5
+  return 0.92 + slow * 0.08 + speck * 0.06
 }
 
 /** 강둑 바깥의 완만한 들판. 언덕과 숲이 물 위가 아니라 땅 위에 서게 한다. */
@@ -1119,6 +1295,7 @@ function createMeadowRibbon(
   const step = 24
   const count = Math.ceil((maxStation - start) / step) + 1
   const positions = new Float32Array(count * 2 * 3)
+  const colors = new Float32Array(count * 2 * 3)
   const indices: number[] = []
   for (let i = 0; i < count; i++) {
     const station = start + i * step
@@ -1126,12 +1303,17 @@ function createMeadowRibbon(
     const outer = offsetPathPoint(path, station, side * MEADOW_OUTER_Z)
     positions.set([inner.x, 0.84, inner.z], i * 6)
     positions.set([outer.x, 0.2, outer.z], i * 6 + 3)
+    const g1 = grassShade(station + 3, side * 11)
+    const g2 = grassShade(station + 13, side * 13) * 0.94
+    colors.set([g1, g1, g1 * 0.96], i * 6)
+    colors.set([g2, g2, g2], i * 6 + 3)
     if (i === count - 1) continue
     const a = i * 2
     indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
   }
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   geometry.setIndex(indices)
   geometry.computeVertexNormals()
   geometry.computeBoundingSphere()
@@ -1154,22 +1336,30 @@ function createHillSegment(random: () => number) {
   return mergePlain(parts)
 }
 
-/** 강둑 너머의 숲 띠 — 크기가 다른 둥근 나무와 뾰족한 나무가 섞여 있다. */
+/**
+ * 강둑 너머의 숲 띠 — 크기가 다른 둥근 나무와 뾰족한 나무가 섞여 있다.
+ * 사이드·쿼터 카메라에서는 강둑 나무 바로 뒤에 크게 보이므로 강둑 나무처럼 울퉁불퉁한 수관으로 만든다.
+ */
 function createTreelineSegment(random: () => number) {
   const parts: THREE.BufferGeometry[] = []
+  let seed = Math.round(random() * 10000)
   for (let i = 0; i < 20; i++) {
     const x = -TREELINE_SEGMENT_LENGTH / 2 + (i + random() * 0.9) * (TREELINE_SEGMENT_LENGTH / 20)
     const z = (random() - 0.5) * 7
     const h = 6 + random() * 7
     if (random() < 0.4) {
-      const cone = new THREE.ConeGeometry(h * 0.32, h, 6)
+      const cone = roughen(new THREE.ConeGeometry(h * 0.32, h, 12, 3), 0.08, seed++)
       cone.translate(x, h / 2, z)
       parts.push(cone)
     } else {
-      const ball = new THREE.SphereGeometry(h * 0.4, 7, 5)
+      const ball = roughen(new THREE.SphereGeometry(h * 0.4, 16, 11), 0.09, seed++)
       ball.scale(1, 1.1, 1)
       ball.translate(x, h * 0.6, z)
       parts.push(ball)
+      // 줄기 — 수관이 땅에 붙어 있으면 덤불로 보인다
+      const trunk = new THREE.CylinderGeometry(h * 0.04, h * 0.06, h * 0.5, 7)
+      trunk.translate(x, h * 0.25, z)
+      parts.push(trunk)
     }
   }
   return mergePlain(parts)
@@ -1186,11 +1376,19 @@ export class World {
   private fog: THREE.Fog
   private bankMaterial: THREE.MeshStandardMaterial
   private hillMaterial: THREE.MeshStandardMaterial
-  private cloudMaterial!: THREE.MeshBasicMaterial
+  private cloudMaterial!: THREE.MeshStandardMaterial
   private moonMaterial!: THREE.MeshBasicMaterial
   private skyUniforms = {
     uTop: { value: new THREE.Color() },
     uBottom: { value: new THREE.Color() },
+    /** 지평선 바로 위의 밝은 대기 띠 */
+    uHaze: { value: new THREE.Color() },
+    uCloud: { value: new THREE.Color() },
+    uSunColor: { value: new THREE.Color() },
+    uSunDir: { value: new THREE.Vector3(-105, 52, -20).normalize() },
+    uSunGlow: { value: 0 },
+    uCloudCover: { value: 0.2 },
+    uTime: { value: 0 },
   }
   private baseWeatherPalette: WeatherBasePalette
   private weatherAppearance = createWeatherAppearance()
@@ -1239,25 +1437,60 @@ export class World {
     this.skyUniforms.uBottom.value.copy(this.baseWeatherPalette.skyBottom)
 
     // ── 하늘 ────────────────────────────────────────────────
+    // 하늘: 지평선→천정 그라데이션 위에 지평선 헤이즈, 태양 글로우, 절차적 구름층(fbm)을 얹는다.
+    // 구름 덩어리 메시는 따로 있고, 여기 구름은 높이 깔린 얇은 층이라 하늘이 한 색으로 비어 보이지 않게 한다.
     this.sky = new THREE.Mesh(
-      new THREE.SphereGeometry(400, 24, 16),
+      new THREE.SphereGeometry(400, 32, 20),
       new THREE.ShaderMaterial({
         side: THREE.BackSide,
         depthWrite: false,
         uniforms: this.skyUniforms,
         vertexShader: /* glsl */`
-          varying float vY;
+          varying vec3 vDir;
           void main() {
-            vY = normalize(position).y;
+            vDir = normalize(position);
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
           }
         `,
         fragmentShader: /* glsl */`
-          uniform vec3 uTop; uniform vec3 uBottom;
-          varying float vY;
+          uniform vec3 uTop; uniform vec3 uBottom; uniform vec3 uHaze; uniform vec3 uCloud; uniform vec3 uSunColor;
+          uniform vec3 uSunDir; uniform float uSunGlow; uniform float uCloudCover; uniform float uTime;
+          varying vec3 vDir;
+          float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float vnoise(vec2 p) {
+            vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+          }
+          float fbm(vec2 p) {
+            float v = 0.0; float a = 0.5;
+            for (int k = 0; k < 4; k++) { v += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; }
+            return v;
+          }
           void main() {
-            float t = smoothstep(-0.15, 0.55, vY);
-            gl_FragColor = vec4(mix(uBottom, uTop, t), 1.0);
+            vec3 d = normalize(vDir);
+            float y = d.y;
+            float t = smoothstep(-0.15, 0.55, y);
+            vec3 col = mix(uBottom, uTop, t);
+            // 지평선 헤이즈 — 대기가 두꺼운 낮은 각도는 밝고 뿌옇다
+            float haze = exp(-max(y, 0.0) * 7.0);
+            col = mix(col, uHaze, haze * 0.7);
+            // 태양 글로우: 넓은 산란 + 좁은 코로나 + 원반
+            float sd = max(dot(d, uSunDir), 0.0);
+            col += uSunColor * uSunGlow * (pow(sd, 6.0) * 0.14 + pow(sd, 48.0) * 0.30 + pow(sd, 400.0) * 0.9);
+            // 구름층: 하늘 돔을 평면에 투영한 좌표에 fbm. 덮인 정도는 날씨가 정한다.
+            if (y > 0.015) {
+              vec2 uv = d.xz / (y + 0.14) * 0.6 + vec2(uTime * 0.0035, uTime * 0.0012);
+              float n = fbm(uv * 1.4) + fbm(uv * 4.2 + 5.0) * 0.25;
+              float cover = clamp(uCloudCover, 0.0, 1.0);
+              float cloud = smoothstep(0.66 - cover * 0.36, 0.86 - cover * 0.16, n);
+              cloud *= smoothstep(0.015, 0.16, y);
+              // 두꺼운 곳은 밑면이 살짝 어둡다
+              vec3 cloudCol = mix(uCloud, uCloud * 0.82, smoothstep(0.7, 1.0, n) * 0.6);
+              // 태양 근처의 구름은 빛을 받아 밝다
+              cloudCol += uSunColor * uSunGlow * pow(sd, 8.0) * 0.25;
+              col = mix(col, cloudCol, cloud * 0.9);
+            }
+            gl_FragColor = vec4(col, 1.0);
           }
         `,
       }),
@@ -1293,11 +1526,12 @@ export class World {
     this.scene.add(this.water.mesh)
 
     // ── 강둑과 들판 ─────────────────────────────────────────
+    // 정점색은 배율이다 — 잔디의 얼룩과 물가 진흙은 지오메트리에 굽고, 날씨에 따른 땅색은 재질이 맡는다
     this.bankMaterial = new THREE.MeshStandardMaterial({
-      color: p.land, flatShading: true, roughness: 0.9, side: THREE.DoubleSide,
+      color: p.land, flatShading: true, roughness: 0.9, side: THREE.DoubleSide, vertexColors: true,
     })
     this.hillMaterial = new THREE.MeshStandardMaterial({
-      color: p.land, flatShading: true, roughness: 1, fog: true,
+      color: p.land, flatShading: false, roughness: 1, fog: true,
     })
     const maxStation = course.durationSec * 8 + 1_000
     for (const side of [1, -1] as const) {
@@ -1311,7 +1545,7 @@ export class World {
     for (const [green, fall] of LEAF_PALETTES) {
       this.foliage.push({
         // 평면 음영이면 도형 티가 그대로 난다. 흐트러진 정점 위에 부드러운 음영을 얹어야 잎 덩어리로 읽힌다.
-        material: new THREE.MeshStandardMaterial({ color: green, flatShading: false, roughness: 0.95 }),
+        material: new THREE.MeshStandardMaterial({ color: green, flatShading: false, roughness: 0.95, vertexColors: true }),
         green: new THREE.Color(green),
         fall: new THREE.Color(fall),
       })
@@ -1324,6 +1558,14 @@ export class World {
     this.courseRoot.add(this.landmarkGroup)
     this.buildLandmarks()
     this.buildBoundaryLine()
+
+    // vertexColors 재질을 쓰는 지오메트리에 색 속성이 없으면 검게 나온다 — 빠진 곳은 흰색으로 채운다
+    const tinted = new Set<THREE.Material>([this.bankMaterial, ...this.foliage.map(f => f.material)])
+    this.scene.traverse(obj => {
+      const mesh = obj as THREE.Mesh
+      if (!mesh.isMesh || !tinted.has(mesh.material as THREE.Material)) return
+      if (!mesh.geometry.getAttribute('color')) fillVertexColor(mesh.geometry, 1)
+    })
 
     // ── 날씨: 코스 구간마다 하나 ───────────────────────────
     const sections = profileSections(course.profile, course.durationSec)
@@ -1361,6 +1603,7 @@ export class World {
     this.bushSpan = layout.bushSpan
     const bushGeometry = roughen(new THREE.SphereGeometry(0.75, 10, 7), 0.2, 7)
     bushGeometry.scale(1.25, 0.85, 1.1)
+    bakeCanopyShade(bushGeometry, 7, 0.4)
     for (const leaf of [1, 5]) {
       const bush = new THREE.InstancedMesh(bushGeometry, this.foliage[leaf]!.material, layout.bushes.length)
       bush.castShadow = true
@@ -1381,6 +1624,8 @@ export class World {
         shirt: SHIRT_COLORS[item.colorIndex]!,
         trousers: TROUSER_COLORS[item.trousersIndex]!,
         hatColor: HAT_COLORS[(item.colorIndex + item.hat) % HAT_COLORS.length]!,
+        hairStyle: (item.hairIndex + item.colorIndex) % 3,
+        outfit: (item.colorIndex + item.skinIndex + item.trousersIndex) % 3,
       })
       const person = new THREE.Mesh(geometry, paintedSmooth)
       person.castShadow = true
@@ -1409,6 +1654,8 @@ export class World {
           shirt: SHIRT_COLORS[person.colorIndex]!,
           trousers: TROUSER_COLORS[person.trousersIndex]!,
           hatColor: HAT_COLORS[(person.colorIndex + person.hat) % HAT_COLORS.length]!,
+          hairStyle: (person.hairIndex + person.colorIndex) % 3,
+          outfit: (person.colorIndex + person.skinIndex + person.trousersIndex) % 3,
         }), paintedSmooth)
         mesh.castShadow = true
         // 로컬 -Z가 강 쪽. 뒷줄(dz가 큰 쪽)은 강에서 멀어진다.
@@ -1463,10 +1710,11 @@ export class World {
     }
 
     // ── 구름 ──────────────────────────────────────────────
-    this.cloudMaterial = new THREE.MeshBasicMaterial({
-      color: '#f6fbff', transparent: true, opacity: 0.9, depthWrite: false,
+    // 조명을 받는 재질이라 윗면은 희고 밑면은 하늘·물빛으로 어두워져 덩어리로 읽힌다. 자체발광으로 너무 어둡지 않게 받친다.
+    this.cloudMaterial = new THREE.MeshStandardMaterial({
+      color: '#f6fbff', emissive: '#8a9db0', transparent: true, opacity: 0.9, depthWrite: false, roughness: 1,
     })
-    const cloudPuffGeometry = new THREE.SphereGeometry(0.68, 10, 7)
+    const cloudPuffGeometry = new THREE.SphereGeometry(0.68, 14, 10)
     const cloudSpan = CLOUD_COUNT * 70
     layout.clouds.forEach((item, index) => {
       const cloud = createCloud(cloudPuffGeometry, this.cloudMaterial, item.phase)
@@ -1578,7 +1826,7 @@ export class World {
     // ── 원경: 숲 띠와 언덕 ────────────────────────────────
     for (const side of [1, -1] as const) {
       for (let i = 0; i < 3; i++) {
-        const strip = new THREE.Mesh(createTreelineSegment(random), this.foliage[i % 2 === 0 ? 2 : 4]!.material)
+        const strip = new THREE.Mesh(bakeCanopyShade(createTreelineSegment(random), i * 31 + side, 0.3), this.foliage[i % 2 === 0 ? 2 : 4]!.material)
         strip.name = 'scenery:treeline'
         const z = side * (BANK_OUTER_Z + 3 + random() * 3)
         strip.position.set(0, 0.7, z)
@@ -1612,8 +1860,16 @@ export class World {
     const appearance = resolveWeatherAppearance(
       this.baseWeatherPalette, weather, this.weatherAppearance,
     )
+    const b = weather.base
     this.skyUniforms.uTop.value.copy(appearance.skyTop)
     this.skyUniforms.uBottom.value.copy(appearance.skyBottom)
+    this.skyUniforms.uHaze.value.copy(appearance.skyBottom).lerp(WHITE, 0.35)
+    this.skyUniforms.uCloud.value.copy(appearance.cloud)
+    this.skyUniforms.uSunColor.value.copy(appearance.sunColor)
+    // 해가 보이는 정도는 날씨 시스템의 태양 원반과 같은 식을 따른다
+    const sunVisible = Math.min(1, b.clear + b.autumn + b.sun + b.wind * 0.35 + b.snow * 0.15)
+    this.skyUniforms.uSunGlow.value = sunVisible * Math.min(1, appearance.sunIntensity / 2.0)
+    this.skyUniforms.uCloudCover.value = 0.12 + weather.cloudiness * 0.75
     this.fog.color.copy(appearance.skyBottom)
     this.fog.near = appearance.fogNear
     this.fog.far = appearance.fogFar
@@ -1624,6 +1880,7 @@ export class World {
     this.hemi.groundColor.copy(appearance.water)
     this.ambient.intensity = appearance.ambientIntensity
     this.cloudMaterial.color.copy(appearance.cloud)
+    this.cloudMaterial.emissive.copy(appearance.cloud).multiplyScalar(0.5)
     this.cloudMaterial.opacity = appearance.cloudOpacity
     this.bankMaterial.color.copy(appearance.land)
     // 먼 언덕은 하늘색이 섞여 멀어 보인다 (대기 원근)
@@ -1633,10 +1890,11 @@ export class World {
         .multiplyScalar(appearance.foliageLight)
     }
     // 달은 황금빛 오후와 눈 오는 날에 은은하게 보인다
-    const b = weather.base
     this.moonMaterial.opacity = b.sun * 0.7 + b.snow * 0.4 + b.autumn * 0.22 + b.clear * 0.12 + b.wind * 0.2
     this.water.setPalette(appearance.water, appearance.waterDeep)
     this.water.setWeather(weather.windStrength, weather.base.rain, appearance.sparkle)
+    // 흐리고 비 오는 날은 물이 하늘을 덜 비친다 — 산란광이라 대비가 낮다
+    this.water.setSky(appearance.skyTop, appearance.skyBottom, 0.9 - b.rain * 0.3 - b.snow * 0.2)
   }
 
   private buildLandmarks() {
@@ -2088,6 +2346,7 @@ export class World {
     for (const s of this.spinners) s.rotation.z = spin
     this.water.update(animationTimeSec, distance)
     this.sky.position.x = cameraX
+    this.skyUniforms.uTime.value = animationTimeSec
     this.nearby.duck.distance = Number.POSITIVE_INFINITY
     this.nearby.duck.pan = 0
     this.nearby.spectator.distance = Number.POSITIVE_INFINITY
@@ -2139,6 +2398,8 @@ export class World {
         + Math.max(0, Math.sin(animationTimeSec * 3.2 + node.phase)) * bounce
       node.obj.rotation.z = (node.animated ? Math.sin(animationTimeSec * 2.7 + node.phase) * 0.025 : 0)
         + Math.sin(animationTimeSec * 1.2 + node.phase) * wind * 0.018
+      // 손을 흔들거나 환호하는 사람은 몸도 좌우로 튼다 — 위아래로만 뛰면 스프링 인형이다
+      if (node.animated) node.obj.rotation.y += Math.sin(animationTimeSec * 1.9 + node.phase) * 0.09
     }
 
     // 군중: 무리째 반복되고 사람마다 다른 박자로 뛴다
@@ -2163,6 +2424,7 @@ export class World {
           const bounce = pose === 'cheer' || pose === 'wave' ? 0.09 : pose === 'clap' ? 0.03 : 0.01
           person.position.y = Math.max(0, Math.sin(animationTimeSec * 3.4 + phase)) * bounce
           person.rotation.z = Math.sin(animationTimeSec * 2.6 + phase) * 0.03
+          person.rotation.y = Math.sin(animationTimeSec * 1.7 + phase) * (pose === 'stand' ? 0.03 : 0.1)
         }
       }
     }

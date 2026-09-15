@@ -41,6 +41,17 @@ export interface Pose {
   square: number
 }
 
+interface StrokeWobble {
+  catchLean: number
+  finishLean: number
+  catchSlide: number
+  timing: number
+}
+
+function zeroWobble(): StrokeWobble {
+  return { catchLean: 0, finishLean: 0, catchSlide: 0, timing: 0 }
+}
+
 export class StrokeEngine {
   /** 사이클 내 위상 0~1. 0 = catch */
   phase = 0
@@ -56,6 +67,26 @@ export class StrokeEngine {
 
   /** 레이트 0 샘플이 이어지기 시작한 시각 (ms). null이면 지금 0이 아니다 */
   private zeroRateSince: number | null = null
+
+  /**
+   * 이번 스트로크만의 미세한 차이. 사람은 같은 스트로크를 두 번 젓지 않는다 —
+   * 캐치에서 조금 덜 숙이거나, 앞까지 다 못 가거나, 몸통이 반 박자 늦게 따라온다.
+   * 같은 seed면 같은 순서로 움직이며, 다음 값은 리커버리 후반부터 부드럽게 섞인다.
+   */
+  private wobble = zeroWobble()
+  /** 리커버리 후반에 미리 섞어 넣을 다음 스트로크의 버릇 */
+  private nextWobble = zeroWobble()
+  private readonly initialRng: number
+  private rng: number
+
+  /** @param seed 보트마다 다른 값을 주면 셋이 같은 순간에 같은 버릇을 내지 않는다 */
+  constructor(seed = 0) {
+    this.initialRng = ((Math.floor(seed) * 2654435761) >>> 0) || 1
+    this.rng = this.initialRng
+    const firstWobble = this.drawWobble()
+    this.wobble = firstWobble
+    this.nextWobble = firstWobble
+  }
 
   /**
    * BLE 샘플 도착 시 호출.
@@ -115,7 +146,11 @@ export class StrokeEngine {
       }
 
       this.phase += advance
-      if (this.phase >= 1) this.phase -= Math.floor(this.phase)
+      if (this.phase >= 1) {
+        const wraps = Math.floor(this.phase)
+        this.phase -= wraps
+        for (let i = 0; i < wraps; i++) this.advanceWobble()
+      }
     } else {
       // 멈춤: 젓던 스트로크를 마저 끝내고 캐치에 선다.
       // 위상을 0으로 되감으면 노와 몸이 거꾸로 움직이는 게 그대로 보인다.
@@ -124,7 +159,10 @@ export class StrokeEngine {
         const remaining = 1 - this.phase
         // 지수 감속만 쓰면 0.99 근처에서 영영 멈춘다. 최소 속도를 두어 캐치에 실제로 도착하게 한다.
         this.phase += Math.max(remaining * k, Math.min(remaining, STOP_MIN_RATE * dt))
-        if (this.phase >= 0.999) this.phase = 0
+        if (this.phase >= 0.999) {
+          this.phase = 0
+          this.advanceWobble()
+        }
       } else {
         this.phase += (0 - this.phase) * k
       }
@@ -145,6 +183,30 @@ export class StrokeEngine {
     this.lastCatchAt = 0
     this.correction = 0
     this.zeroRateSince = null
+    this.rng = this.initialRng
+    const firstWobble = this.drawWobble()
+    this.wobble = firstWobble
+    this.nextWobble = firstWobble
+  }
+
+  /** 리커버리에서 이미 섞인 값을 현재 버릇으로 넘기고, 그다음 값을 준비한다. */
+  private advanceWobble() {
+    this.wobble = this.nextWobble
+    this.nextWobble = this.drawWobble()
+  }
+
+  /** 다음 스트로크의 버릇을 뽑는다. 결정적 LCG — 같은 seed면 같은 순서다. */
+  private drawWobble(): StrokeWobble {
+    const next = () => {
+      this.rng = (Math.imul(this.rng, 1664525) + 1013904223) >>> 0
+      return this.rng / 4294967296 * 2 - 1     // -1..1
+    }
+    return {
+      catchLean: next() * WOBBLE_LEAN,
+      finishLean: next() * WOBBLE_LEAN,
+      catchSlide: (next() + 1) * 0.5 * WOBBLE_SLIDE,
+      timing: next() * WOBBLE_TIMING,
+    }
   }
 
   /**
@@ -162,21 +224,36 @@ export class StrokeEngine {
     const inWater = p < df
     const t = inWater ? p / df : (p - df) / (1 - df)
 
-    let slide: number, bodyAngle: number, armDraw: number
+    // 다음 버릇을 캐치에서 갑자기 바꾸면 시트와 몸통이 순간이동한다. 리커버리 후반부터
+    // 속도 0으로 섞어 두면 위상이 1→0으로 넘어갈 때 양쪽 자세가 정확히 이어진다.
+    const wobbleBlend = inWater ? 0 : easeInOut(seg(t, WOBBLE_BLEND_START, 1))
+    const timing = lerp(this.wobble.timing, this.nextWobble.timing, wobbleBlend)
+    const catchSlide = lerp(this.wobble.catchSlide, this.nextWobble.catchSlide, wobbleBlend)
+    const catchLean = lerp(this.wobble.catchLean, this.nextWobble.catchLean, wobbleBlend)
+    const finishLean = lerp(this.wobble.finishLean, this.nextWobble.finishLean, wobbleBlend)
+    let slide: number, body: number, armDraw: number, reach: number
 
+    // 각 마디는 멈춘 상태에서 출발해 속도 정점을 찍고 다시 멈춘다(easePeak). 예전엔 다리가 캐치에서
+    // 즉시 최고 속도로 튀어나가고 팔이 최고 속도인 채 가슴에 부딪혀 멈췄다 — 그게 기계처럼 보이는 첫째 이유였다.
+    // 창을 겹쳐 놓아 어느 순간에도 어딘가는 움직이고 있다.
     if (inWater) {
-      // 드라이브 순서: 다리 → 몸통 → 팔 (실제 로잉 시퀀스)
-      slide = easeOut(seg(t, 0.00, 0.55))
-      const body = easeInOut(seg(t, 0.30, 1.00))
-      armDraw = easeIn(seg(t, 0.60, 1.00))
-      bodyAngle = lerp(CATCH_LEAN, FINISH_LEAN, body)
+      // 드라이브 순서: 다리 → 몸통 → 팔. 다리는 첫 30%에서 정점(폭발적이되 연속), 몸통이 넘겨받고 팔이 마무리한다.
+      slide = easePeak(seg(t, 0.00, 0.62), 0.28)
+      body = easePeak(seg(t, 0.20 + timing, 0.94 + timing), 0.45)
+      armDraw = easePeak(seg(t, 0.44 + timing, 1.00), 0.62)
+      // 캐치의 리치는 다리가 밀기 시작하면 풀린다 — 상체가 손잡이에 매달린다(hang)
+      reach = 1 - easePeak(seg(t, 0.00, 0.30), 0.5)
     } else {
-      // 리커버리 순서: 팔 → 몸통 → 다리 (드라이브의 역순)
-      armDraw = 1 - easeInOut(seg(t, 0.00, 0.30))
-      const body = 1 - easeInOut(seg(t, 0.15, 0.65))
-      slide = 1 - easeInOut(seg(t, 0.35, 1.00))
-      bodyAngle = lerp(CATCH_LEAN, FINISH_LEAN, body)
+      // 리커버리 순서: 팔 → 몸통 → 다리. 슬라이드는 앞으로 갈수록 느려져 캐치에 살며시 닿는다.
+      armDraw = 1 - easePeak(seg(t, 0.00, 0.34), 0.45)
+      body = 1 - easePeak(seg(t, 0.10 + timing, 0.64 + timing), 0.5)
+      slide = 1 - easePeak(seg(t, 0.30, 1.00), 0.38)
+      // 슬라이드 마지막에 상체가 조금 더 뻗는다 — 몸통이 캐치 각도에서 얼어붙지 않는다
+      reach = easePeak(seg(t, 0.62, 1.00), 0.5)
     }
+    // 이번 스트로크는 앞까지 다 못 갔을 수도 있다 (catchSlide만큼 남긴다)
+    slide = catchSlide + (1 - catchSlide) * slide
+    const bodyAngle = lerp(CATCH_LEAN + catchLean, FINISH_LEAN + finishLean, body) + REACH_LEAN * reach
 
     const driveProgress = inWater ? t : 1
     const recoveryProgress = inWater ? 0 : t
@@ -246,6 +323,14 @@ const SQUARE_UP = 0.22
 
 /** 캐치에서 상체를 앞으로 숙인 각도 (rad) */
 const CATCH_LEAN = 0.42
+/** 캐치 직전·직후에 상체가 추가로 뻗는 각도 (rad) — 슬라이드 끝의 리치와 드라이브 초반의 hang */
+const REACH_LEAN = 0.05
+/** 스트로크마다 달라지는 숙임·젖힘 (rad), 못 미친 슬라이드(0~1 비율), 몸통·팔 타이밍(드라이브 비율) */
+const WOBBLE_LEAN = 0.03
+const WOBBLE_SLIDE = 0.03
+const WOBBLE_TIMING = 0.03
+/** 다음 스트로크의 미세한 차이를 섞기 시작하는 리커버리 진행도 */
+const WOBBLE_BLEND_START = 0.55
 /** 피니시에서 뒤로 젖힌 각도 (rad) */
 const FINISH_LEAN = -0.32
 /** 캐치에서의 노 각도 (rad) */
@@ -265,6 +350,15 @@ function lerp(a: number, b: number, t: number): number {
 }
 function easeIn(t: number): number { return t * t }
 function easeOut(t: number): number { return 1 - (1 - t) * (1 - t) }
+/**
+ * 속도가 0에서 출발해 u=a에서 정점을 찍고 다시 0으로 떨어지는 이동 (삼각형 속도 프로파일의 적분).
+ * a=0.5면 easeInOut과 같고, a가 작을수록 빨리 튀어나가 길게 감속한다 — 사람의 팔다리는 대개 이렇게 움직인다.
+ */
+export function easePeak(u: number, a: number): number {
+  if (u <= 0) return 0
+  if (u >= 1) return 1
+  return u < a ? (u * u) / a : 1 - ((1 - u) * (1 - u)) / (1 - a)
+}
 function easeInOut(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
 }

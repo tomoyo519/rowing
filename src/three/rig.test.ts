@@ -287,6 +287,96 @@ describe('자연스러운 자세', () => {
   })
 })
 
+describe('사람다운 보조 동작', () => {
+  function engineAt(phase: number) {
+    const e = new StrokeEngine()
+    e.onSample(26, 0, 0); e.update(0.5); e.update(0.5); e.update(0.5)
+    e.phase = phase
+    return e
+  }
+
+  it('손이 교차할 때 왼쪽 어깨가 오른쪽보다 높고, 캐치에서는 거의 수평이다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const e = engineAt(0)
+    let best = { gap: Infinity, dy: 0 }
+    for (let k = 0; k < 120; k++) {
+      e.phase = k / 120
+      rig.apply(e.pose(), 1 / 60, 4)
+      const [l, r] = rig.joints.handle
+      const gap = Math.abs(l!.z - r!.z)
+      if (gap < best.gap) best = { gap, dy: rig.joints.armRoot[0]!.y - rig.joints.armRoot[1]!.y }
+    }
+    expect(best.dy).toBeGreaterThan(0.015)
+    e.phase = 0.01
+    rig.apply(e.pose(), 1 / 60, 4)
+    rig.apply(e.pose(), 1 / 60, 4)
+    expect(Math.abs(rig.joints.armRoot[0]!.y - rig.joints.armRoot[1]!.y)).toBeLessThan(0.01)
+  })
+
+  it('무릎은 캐치에서 바깥으로 벌어지고 피니시에서 모인다', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const e = engineAt(0.01)
+    rig.apply(e.pose(), 1 / 60, 4)
+    const kneeCatch = rig.joints.knee[0]!.clone()
+    e.phase = e.driveFraction * 0.97
+    rig.apply(e.pose(), 1 / 60, 4)
+    const kneeFinish = rig.joints.knee[0]!.clone()
+    // 엉덩이 관절(z=0.11)에서 바깥으로 얼마나 나갔는지
+    expect(kneeCatch.z - 0.11).toBeGreaterThan(0.06)
+    expect(kneeFinish.z - 0.11).toBeLessThan(kneeCatch.z - 0.11 - 0.04)
+  })
+
+  it('페더링하면 주먹이 노 축 둘레로 구른다 (손목 떨어뜨림)', () => {
+    const rig = new Rig(COLORS_PLAYER)
+    const fists = (rig as unknown as { fists: THREE.Mesh[] }).fists
+    const e = engineAt(0.02)                    // 드라이브: 스퀘어
+    rig.apply(e.pose(), 1 / 60, 4)
+    const squared = fists[0]!.quaternion.clone()
+    const df = e.driveFraction
+    e.phase = df + (1 - df) * 0.5               // 리커버리 한가운데: 페더
+    const p = e.pose()
+    expect(p.square).toBe(0)
+    rig.apply(p, 1 / 60, 4)
+    const feathered = fists[0]!.quaternion.clone()
+    // 두 자세 사이의 회전각이 손목 떨어뜨림(0.45rad) 이상이어야 한다 — 노 방향 차이도 섞이지만 0은 아니다
+    expect(squared.angleTo(feathered)).toBeGreaterThan(0.3)
+  })
+})
+
+describe('체형', () => {
+  function poseAt(phase: number) {
+    const e = new StrokeEngine()
+    e.onSample(26, 0, 0); e.update(0.5); e.update(0.5); e.update(0.5)
+    e.phase = phase
+    return e.pose()
+  }
+
+  it('여자 체형은 어깨가 좁고 골반이 넓으며 뒤로 묶은 머리가 있다', () => {
+    const male = new Rig(COLORS_PLAYER)
+    const female = new Rig(COLORS_PLAYER, 1, 0, 'female')
+    const pose = poseAt(0.5)
+    male.apply(pose, 1 / 60, 4)
+    female.apply(pose, 1 / 60, 4)
+    expect(Math.abs(female.joints.armRoot[0]!.z)).toBeLessThan(Math.abs(male.joints.armRoot[0]!.z) - 0.01)
+    const headParts = (rig: Rig) => (rig as unknown as { head: THREE.Group }).head.children.length
+    expect(headParts(female)).toBeGreaterThan(headParts(male))
+  })
+
+  it('체형이 달라도 뼈대는 같다 — 팔 길이와 발 위치가 동일하다', () => {
+    const male = new Rig(COLORS_PLAYER)
+    const female = new Rig(COLORS_PLAYER, 1, 0, 'female')
+    for (const phase of [0.01, 0.2, 0.5, 0.8]) {
+      const pose = poseAt(phase)
+      male.apply(pose, 1 / 60, 4)
+      female.apply(pose, 1 / 60, 4)
+      expect(female.joints.armRoot[0]!.distanceTo(female.joints.elbow[0]!)).toBeCloseTo(0.30, 4)
+      expect(female.joints.elbow[0]!.distanceTo(female.joints.handle[0]!)).toBeCloseTo(0.30, 4)
+      expect(female.joints.foot[0]!.distanceTo(male.joints.foot[0]!)).toBeLessThan(1e-6)
+      expect(female.joints.hip.distanceTo(male.joints.hip)).toBeLessThan(1e-6)
+    }
+  })
+})
+
 describe('정교한 레이싱 셸 모델', () => {
   it('선체 중앙은 넓고 뱃머리와 선미는 뾰족하다', () => {
     const geometry = createRacingHullGeometry()

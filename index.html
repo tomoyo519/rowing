@@ -194,6 +194,8 @@
   .tier b { display: block; font-size: 15px; margin-bottom: 3px; }
   .tier span { font-size: 11px; color: var(--muted); }
   .tier-hint { color: var(--muted); font-size: 13px; text-align: center; margin: 0 0 28px; }
+  .avatars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 28px; max-width: 420px; }
+  .avatar b { font-size: 17px; }
 
   /* ── 레이스 ── */
   #screen-race::after {
@@ -645,6 +647,9 @@
   <div class="pad">
     <h1>코스 선택</h1>
     <p class="sub">목표 페이스를 먼저 정하면 각 코스의 예상 거리가 계산됩니다.<br>코스마다 강도 변화 패턴이 다릅니다 — 카드의 그래프가 시간에 따른 페이스 곡선입니다.</p>
+
+    <h2>아바타</h2>
+    <div class="avatars" id="avatars" role="group" aria-label="아바타 체형"></div>
 
     <h2>목표 페이스</h2>
     <div class="tiers" id="tiers"></div>
