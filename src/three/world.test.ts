@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { COURSES } from '../game/courses'
 import { GHOST_LANE_OFFSET } from '../game/coursePath'
 import { DIMS } from './rig'
-import { createSceneryLayout, World, wrappedLoopX } from './world'
+import { createSceneryLayout, shoreHeightAt, SHORELINE_INSET, World, wrappedLoopX } from './world'
 
 describe('강변 배경 배치', () => {
   it('같은 코스는 같은 배치, 다른 코스는 다른 배치를 만든다', () => {
@@ -144,12 +144,20 @@ describe('강변 배경 배치', () => {
     world.dispose()
   })
 
-  it('구름은 7개의 단일 인스턴스 군집으로 만들고 큰 저택을 포함한다', () => {
+  it('구름 7덩이의 조각 전부를 빌보드 인스턴스 메시 하나로 그리고 큰 저택을 포함한다', () => {
     const world = new World(COURSES[0]!)
     const clouds: THREE.Object3D[] = []
-    world.scene.traverse(node => { if (node.name === 'scenery:cloud') clouds.push(node) })
-    expect(clouds).toHaveLength(7)
-    expect(clouds.every(node => node instanceof THREE.InstancedMesh)).toBe(true)
+    world.scene.traverse(node => { if (node.name === 'scenery:clouds') clouds.push(node) })
+    expect(clouds).toHaveLength(1)
+    const puffs = clouds[0] as THREE.InstancedMesh
+    expect(puffs).toBeInstanceOf(THREE.InstancedMesh)
+    // 덩이마다 11조각 — 윗조각은 희고 밑조각은 그늘지게 인스턴스 색을 굽는다
+    expect(puffs.count).toBe(7 * 11)
+    expect(puffs.instanceColor).not.toBeNull()
+    const shade = new THREE.Color()
+    const shades = new Set<string>()
+    for (let i = 0; i < 11; i++) { puffs.getColorAt(i, shade); shades.add(shade.getHexString()) }
+    expect(shades.size).toBeGreaterThan(2)
 
     const manor = world.scene.getObjectByName('scenery:manor')
     expect(manor).toBeDefined()
@@ -173,6 +181,67 @@ describe('강변 배경 배치', () => {
     // 새 랜드마크 종류도 코스에 실제로 배치된다
     const landmarks = [...names].filter(name => name.startsWith('landmark:'))
     expect(landmarks).toEqual(expect.arrayContaining(['landmark:church', 'landmark:townhouses', 'landmark:footbridge', 'landmark:suspension']))
+    world.dispose()
+  })
+
+  it('강둑은 절벽이 아니라 물속으로 이어지는 비탈이고, 갈대는 물가선에 걸터앉는다', () => {
+    // 잔디 가장자리에서 물가선까지 비탈이 단조롭게 내려가 수면(0)을 지난다
+    expect(shoreHeightAt(0)).toBeCloseTo(0.85, 6)
+    expect(shoreHeightAt(SHORELINE_INSET)).toBeCloseTo(0, 6)
+    expect(shoreHeightAt(SHORELINE_INSET + 5)).toBeLessThan(-0.5)
+    let previous = shoreHeightAt(0)
+    for (let inset = 0.05; inset < 3; inset += 0.05) {
+      const h = shoreHeightAt(inset)
+      expect(h).toBeLessThanOrEqual(previous)
+      previous = h
+    }
+
+    const world = new World(COURSES[0]!)
+    world.update(5, 5, 120, 10_000, 0)
+    const reeds = world.scene.getObjectByName('scenery:reeds') as THREE.InstancedMesh
+    const tufts = world.scene.getObjectByName('scenery:tufts') as THREE.InstancedMesh
+    expect(reeds).toBeInstanceOf(THREE.InstancedMesh)
+    expect(tufts).toBeInstanceOf(THREE.InstancedMesh)
+    const matrix = new THREE.Matrix4()
+    const position = new THREE.Vector3()
+    let wet = 0, dry = 0
+    for (let i = 0; i < reeds.count; i++) {
+      reeds.getMatrixAt(i, matrix)
+      position.setFromMatrixPosition(matrix)
+      // 뿌리는 수면 근처 — 비탈 위(얕은 물 또는 젖은 진흙)
+      expect(position.y).toBeGreaterThan(-0.7)
+      expect(position.y).toBeLessThan(0.4)
+      if (position.y < -0.06) wet++
+      else dry++
+    }
+    expect(wet).toBeGreaterThan(reeds.count * 0.25)
+    expect(dry).toBeGreaterThan(reeds.count * 0.25)
+    // 물가 거품 띠가 양쪽 강둑에 하나씩 있다
+    const shores: THREE.Object3D[] = []
+    world.scene.traverse(node => { if (node.name === 'scenery:shore') shores.push(node) })
+    expect(shores).toHaveLength(2)
+    // 강둑 리본은 잔디 텍스처용 uv를 갖고 법선이 위를 본다
+    const bank = world.scene.getObjectByName('scenery:bank') as THREE.Mesh
+    expect(bank.geometry.getAttribute('uv')).toBeDefined()
+    const normal = bank.geometry.getAttribute('normal')
+    let up = 0
+    for (let i = 0; i < normal.count; i++) up += normal.getY(i)
+    expect(up).toBeGreaterThan(0)
+    world.dispose()
+  })
+
+  it('품질 티어가 낮으면 풀포기 일부를 화면 밖으로 치운다', () => {
+    const world = new World(COURSES[0]!)
+    world.setVegetationScale(0.3)
+    world.update(5, 5, 120, 10_000, 0)
+    const tufts = world.scene.getObjectByName('scenery:tufts') as THREE.InstancedMesh
+    const matrix = new THREE.Matrix4()
+    let visible = 0
+    for (let i = 0; i < tufts.count; i++) {
+      tufts.getMatrixAt(i, matrix)
+      if (matrix.elements[13]! > -10) visible++
+    }
+    expect(visible).toBe(Math.round(tufts.count * 0.3))
     world.dispose()
   })
 

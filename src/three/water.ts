@@ -1,17 +1,23 @@
 import * as THREE from 'three'
+import { waterNormalTexture } from './textures'
+import type { PlanarReflection } from './reflection'
 
 /**
  * 물 표면.
  *
- * MeshStandardMaterial에 onBeforeCompile로 세 가지를 얹는다.
+ * MeshStandardMaterial에 onBeforeCompile로 얹는다.
  *  - 정점: 낮은 파도의 변위 (조정 수로는 잔잔해서 파고 10cm 아래)
- *  - 프래그먼트: 같은 파도의 해석적 기울기 + 잔물결 세 겹으로 노멀을 흔든다 →
- *    햇빛 하이라이트가 한 덩어리로 번지지 않고 물결을 따라 잘게 부서진다
- *  - 프래그먼트: 프레넬 — 비스듬히 볼수록 하늘이 비친다. 발밑은 깊은 물색, 멀리는 지평선 하늘색.
+ *  - 프래그먼트 노멀: 같은 파도의 해석적 기울기 + 잔물결 노멀맵 두 겹(서로 다른 방향·속도로 흐름)
+ *    → 햇빛 하이라이트가 한 덩어리로 번지지 않고 물결을 따라 잘게 부서진다
+ *  - 반사: 평면 반사 텍스처(나무·다리·보트가 물에 비친다)를 노멀로 흔들어 샘플링하고, 프레넬로
+ *    섞는다 — 발밑은 깊은 물색, 비스듬히 볼수록 반사가 강해진다. 반사가 꺼지면 하늘 그라데이션으로 대신한다.
+ *  - 햇빛 정반사는 재질의 GGX가 맡는다 (노멀이 잘게 흔들려 자연스러운 반짝임이 난다).
  * three의 조명·안개·그림자 파이프라인은 그대로 쓴다.
  */
 export class Water {
   readonly mesh: THREE.Mesh
+  private material: THREE.MeshStandardMaterial
+  private reflection: PlanarReflection | null = null
   private uniforms = {
     uTime: { value: 0 },
     uScroll: { value: 0 },
@@ -21,8 +27,13 @@ export class Water {
     uSparkle: { value: 0 },
     uSkyTop: { value: new THREE.Color('#3a8fe2') },
     uSkyBottom: { value: new THREE.Color('#dcefff') },
-    /** 하늘 반사의 세기. 흐린 날은 물이 하늘을 덜 비춘다(빛이 산란되어 대비가 낮다) */
+    /** 하늘 반사의 세기. 흐린 날은 물이 하늘을 덜 비친다(빛이 산란되어 대비가 낮다) */
     uReflect: { value: 0.85 },
+    tNormal: { value: waterNormalTexture() },
+    tReflection: { value: null as THREE.Texture | null },
+    uReflectMatrix: { value: new THREE.Matrix4() },
+    /** 0이면 하늘 그라데이션만, 1이면 평면 반사 텍스처 */
+    uPlanar: { value: 0 },
   }
 
   constructor(color: THREE.ColorRepresentation, deep: THREE.ColorRepresentation) {
@@ -30,9 +41,11 @@ export class Water {
     geo.rotateX(-Math.PI / 2)
 
     const mat = new THREE.MeshStandardMaterial({
-      // 노멀을 잔물결로 흔들어 하이라이트가 흩어지므로 예전(0.5)보다 매끈해도 화면이 하얗게 덮이지 않는다
-      color, roughness: 0.42, metalness: 0.04,
+      color, roughness: 0.22, metalness: 0.0,
+      // 반사는 평면 반사 텍스처가 맡는다. 환경맵까지 겹치면 하늘이 두 번 비친다.
+      envMapIntensity: 0.35,
     })
+    this.material = mat
     this.uniforms.uDeep.value = new THREE.Color(deep)
 
     mat.onBeforeCompile = shader => {
@@ -64,31 +77,17 @@ export class Water {
             c2 * -0.41 + c3 * 0.55 + c4 * 1.3 + c5 * -5.6
           );
         }
-        // 변위 없는 잔물결 네 겹 — 노멀만 흔든다. 파면을 저주파 sin으로 휘고 느린 얼룩 마스크로 세기를
-        // 군데군데 바꿔서 평행 줄무늬(골판지)로 읽히지 않게 한다.
-        vec2 rippleGrad(vec2 p) {
-          float amp = 0.009 + uWind * 0.012 + uRain * 0.010;
-          float m1 = 0.55 + 0.45 * sin(p.x * 0.23 + p.y * 0.31 + uTime * 0.40);
-          float m2 = 0.55 + 0.45 * sin(p.x * -0.17 + p.y * 0.27 - uTime * 0.30);
-          float m3 = 0.55 + 0.45 * sin(p.x * 0.29 - p.y * 0.19 + uTime * 0.50);
-          float a1 = p.x * 4.1 + p.y * 2.7 + uTime * 2.9 + sin(p.y * 0.50 + uTime * 0.2) * 2.0;
-          float a2 = p.x * -2.9 + p.y * 5.3 - uTime * 2.3 + sin(p.x * 0.45 - uTime * 0.15) * 2.0;
-          float a3 = p.x * 7.5 + p.y * -6.1 + uTime * 4.2 + sin(p.x * 0.7 + p.y * 0.6) * 1.5;
-          float a4 = p.x * 6.3 + p.y * 6.9 - uTime * 3.6 + sin(p.y * 0.8 - p.x * 0.3) * 1.2;
-          return (vec2(4.1, 2.7) * cos(a1) * 0.50 * m1
-                + vec2(-2.9, 5.3) * cos(a2) * 0.45 * m2
-                + vec2(7.5, -6.1) * cos(a3) * 0.22 * m3
-                + vec2(6.3, 6.9) * cos(a4) * 0.18 * m1) * amp;
-        }
       `
 
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', /* glsl */`
           #include <common>
           uniform float uScroll;
+          uniform mat4 uReflectMatrix;
           ${waveGlsl}
           varying float vWave;
           varying vec2 vXZ;
+          varying vec4 vReflect;
         `)
         .replace('#include <begin_vertex>', /* glsl */`
           #include <begin_vertex>
@@ -97,6 +96,7 @@ export class Water {
           transformed.y += w;
           vWave = w;
           vXZ = wp;
+          vReflect = uReflectMatrix * (modelMatrix * vec4(transformed, 1.0));
         `)
 
       shader.fragmentShader = shader.fragmentShader
@@ -107,50 +107,82 @@ export class Water {
           uniform vec3 uSkyTop;
           uniform vec3 uSkyBottom;
           uniform float uReflect;
+          uniform sampler2D tNormal;
+          uniform sampler2D tReflection;
+          uniform float uPlanar;
           ${waveGlsl}
           varying float vWave;
           varying vec2 vXZ;
+          varying vec4 vReflect;
+          vec3 waterNormalWorld;
         `)
         .replace('#include <color_fragment>', /* glsl */`
           #include <color_fragment>
-          // 파고가 낮은 골은 깊은 색, 마루는 밝게 — 노멀 없이도 물결이 읽힌다
+          // 물은 빛을 흡수한다 — 반사가 그림을 만들고 표면색 자체는 어둡고 깊다.
+          // 파고가 낮은 골은 깊은 색, 마루는 조금 밝다 (얕은 물의 산란)
           float t = clamp(vWave * 5.0 + 0.5, 0.0, 1.0);
-          diffuseColor.rgb = mix(mix(uDeep, diffuseColor.rgb, 0.45), diffuseColor.rgb, t);
-          diffuseColor.rgb += pow(t, 7.0) * 0.12;
+          diffuseColor.rgb = mix(uDeep, diffuseColor.rgb, 0.35 + t * 0.3) * 0.62;
         `)
         .replace('#include <normal_fragment_maps>', /* glsl */`
           #include <normal_fragment_maps>
           {
-            // 멀리서는 잔물결이 픽셀보다 잘아 반짝거리기만 하므로 거리에 따라 눕힌다
             float dist = length(vViewPosition);
-            float fade = 1.0 / (1.0 + dist * 0.045);
-            vec2 g = waveGrad(vXZ) + rippleGrad(vXZ) * fade;
-            vec3 nWorld = normalize(vec3(-g.x, 1.0, -g.y));
+            // 멀리서는 잔물결이 픽셀보다 잘아 반짝거리기만 하므로 거리에 따라 눕힌다
+            float fade = 1.0 / (1.0 + dist * 0.030);
+            vec2 g = waveGrad(vXZ);
+            // 잔물결 노멀맵 두 겹: 바람 방향으로 흐르는 큰 결 + 반대로 비껴 흐르는 잔결
+            float amp = 0.55 + uWind * 0.55 + uRain * 0.6;
+            vec3 n1 = texture2D(tNormal, vXZ * 0.085 + vec2(uTime * 0.020, uTime * 0.011)).xyz * 2.0 - 1.0;
+            vec3 n2 = texture2D(tNormal, vXZ * 0.23 * vec2(1.0, -1.0) + vec2(-uTime * 0.031, uTime * 0.017)).xyz * 2.0 - 1.0;
+            vec3 n3 = texture2D(tNormal, vXZ * 0.52 + vec2(uTime * 0.05, -uTime * 0.04)).xyz * 2.0 - 1.0;
+            vec2 detail = (n1.xy * 0.55 + n2.xy * 0.32 + n3.xy * 0.13 * (1.0 + uRain * 2.0)) * amp * fade * 0.55;
+            vec3 nWorld = normalize(vec3(-g.x + detail.x, 1.0, -g.y + detail.y));
+            waterNormalWorld = nWorld;
             normal = normalize((viewMatrix * vec4(nWorld, 0.0)).xyz);
           }
         `)
         .replace('#include <emissivemap_fragment>', /* glsl */`
           #include <emissivemap_fragment>
-          {
-            // 프레넬: 비스듬히 볼수록 물색 대신 하늘이 비친다. 반사 방향이 높을수록 천정색, 낮을수록 지평선색.
-            vec3 V = normalize(vViewPosition);
-            float NoV = clamp(dot(normal, V), 0.0, 1.0);
-            float fresnel = 0.03 + 0.97 * pow(1.0 - NoV, 5.0);
-            vec3 R = reflect(-V, normal);
-            float ry = dot(viewMatrix[1].xyz, R);
-            vec3 skyReflection = mix(uSkyBottom, uSkyTop, smoothstep(-0.05, 0.6, ry));
-            diffuseColor.rgb = mix(diffuseColor.rgb, skyReflection, clamp(fresnel * uReflect, 0.0, 0.82));
-          }
-          // 햇빛 반짝임 — 잔물결 마루에서만 잠깐씩 튀는 하이라이트.
-          // 두 주파수의 곱이라 규칙적인 격자로 보이지 않는다
-          // (GLSL ES 예약어인 patch/sample 같은 이름은 쓰면 안 된다)
+          // 햇빛 반짝임 — 잔물결 마루에서만 잠깐씩 튀는 하이라이트 (GGX 정반사에 얹는 보조 효과)
           float g1 = sin(vXZ.x * 3.1 + uTime * 1.7) * sin(vXZ.y * 2.7 - uTime * 1.3);
           float g2 = sin(vXZ.x * 7.9 - uTime * 2.9 + vXZ.y * 1.9) * sin(vXZ.y * 6.3 + uTime * 2.2);
           float cluster = sin(vXZ.x * 0.11 + uTime * 0.21) * sin(vXZ.y * 0.17 - uTime * 0.13) * 0.5 + 0.5;
           float mask = smoothstep(0.45, 0.95, cluster);
           float glint = pow(max(0.0, g1), 22.0) * pow(max(0.0, g2), 9.0) * mask;
           float crest = clamp(vWave * 5.0 + 0.5, 0.0, 1.0);
-          totalEmissiveRadiance += vec3(1.0, 0.97, 0.88) * glint * uSparkle * (0.2 + crest * 1.4);
+          totalEmissiveRadiance += vec3(1.0, 0.97, 0.88) * glint * uSparkle * (0.1 + crest * 0.7);
+        `)
+        .replace('#include <opaque_fragment>', /* glsl */`
+          {
+            // 프레넬: 비스듬히 볼수록 물색 대신 반사가 보인다.
+            vec3 V = normalize(vViewPosition);
+            float NoV = clamp(dot(normal, V), 0.0, 1.0);
+            float fresnel = 0.025 + 0.975 * pow(1.0 - NoV, 5.0);
+            vec3 R = reflect(-V, normal);
+            float ry = dot(viewMatrix[1].xyz, R);
+            vec3 skyRef = mix(uSkyBottom, uSkyTop, smoothstep(-0.05, 0.6, ry));
+            vec3 reflection = skyRef;
+            float cap = 0.9;
+            if (uPlanar > 0.001) {
+              float dist = length(vViewPosition);
+              // 가까운 물결은 반사를 크게 흔들고, 멀리서는 화면 공간에서 작게 흔든다
+              vec2 distort = waterNormalWorld.xz * (0.12 / (1.0 + dist * 0.06));
+              vec2 uv = clamp(vReflect.xy / vReflect.w + distort, 0.002, 0.998);
+              vec3 planar = texture2D(tReflection, uv).rgb;
+              reflection = mix(skyRef, planar, uPlanar);
+            } else {
+              // 반사 텍스처가 없으면(low 티어) 밝은 지평선색이 그대로 비쳐 물이 우유처럼 하얘진다 —
+              // 하늘을 더 깊은 색으로 섞고 반사 상한도 낮춘다
+              reflection = mix(uSkyBottom * 0.6, uSkyTop, smoothstep(0.0, 0.4, ry));
+              cap = 0.68;
+            }
+            float k = clamp(fresnel * uReflect, 0.0, cap);
+            // 확산·발광은 프레넬만큼 반사로 바뀌고, 햇빛 정반사는 그대로 얹는다
+            outgoingLight = mix(totalDiffuse + totalEmissiveRadiance, reflection, k)
+              + reflectedLight.directSpecular
+              + reflectedLight.indirectSpecular * (1.0 - k);
+          }
+          #include <opaque_fragment>
         `)
     }
 
@@ -160,14 +192,28 @@ export class Water {
     this.mesh.position.y = 0
   }
 
+  /** 평면 반사를 연결한다 (null이면 하늘 그라데이션만 쓴다). */
+  setReflection(reflection: PlanarReflection | null) {
+    this.reflection = reflection
+    this.uniforms.tReflection.value = reflection ? reflection.texture : null
+    this.uniforms.uPlanar.value = reflection && reflection.enabled ? 1 : 0
+    // 반사가 꺼지면 환경맵이 하늘을 대신 비춘다 (너무 세면 지평선색이 물을 덮는다)
+    this.material.envMapIntensity = reflection && reflection.enabled ? 0.35 : 0.5
+  }
+
   /** distance는 코스 진행 거리(m) — 물결이 뒤로 흐른다 */
   update(timeSec: number, distance: number) {
     this.uniforms.uTime.value = timeSec
     this.uniforms.uScroll.value = distance
+    if (this.reflection) {
+      this.uniforms.uReflectMatrix.value.copy(this.reflection.textureMatrix)
+      this.uniforms.tReflection.value = this.reflection.texture
+      this.uniforms.uPlanar.value = this.reflection.enabled ? 1 : 0
+    }
   }
 
   setPalette(color: THREE.ColorRepresentation, deep: THREE.ColorRepresentation) {
-    ;(this.mesh.material as THREE.MeshStandardMaterial).color.set(color)
+    this.material.color.set(color)
     this.uniforms.uDeep.value.set(deep)
   }
 
@@ -183,6 +229,6 @@ export class Water {
     this.uniforms.uRain.value = Math.max(0, Math.min(1, rain))
     this.uniforms.uSparkle.value = Math.max(0, Math.min(1, sparkle))
     // 비가 오면 표면이 거칠어진다. 맑고 반짝이는 날은 조금 더 매끈하다.
-    ;(this.mesh.material as THREE.MeshStandardMaterial).roughness = 0.42 + rain * 0.2 - sparkle * 0.06
+    this.material.roughness = 0.22 + rain * 0.25 + wind * 0.08 - sparkle * 0.05
   }
 }

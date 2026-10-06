@@ -59,7 +59,8 @@ describe('페이스메이커 레이스 배치', () => {
         || node instanceof THREE.LineSegments
       ) drawables.push(node)
     })
-    expect(drawables.length).toBeLessThan(430)
+    // 나무마다 잎사귀 카드 메시가 하나씩 더 붙어 예전(430)보다 늘었다 — 대부분은 절두체 밖이라 그려지지 않는다
+    expect(drawables.length).toBeLessThan(480)
     world.dispose()
   })
 })

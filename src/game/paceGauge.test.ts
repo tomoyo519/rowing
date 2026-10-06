@@ -31,3 +31,23 @@ describe('목표 페이스 게이지', () => {
     expect(paceGaugeState(0, 135).state).toBe('idle')
   })
 })
+
+describe('양방향 게이지 막대', () => {
+  it('느리면 가운데에서 왼쪽으로, 빠르면 오른쪽으로 자란다', async () => {
+    const { paceGaugeBar, paceGaugeTolerance, paceGaugeTicks } = await import('./paceGauge')
+    expect(paceGaugeBar(Infinity)).toEqual({ left: 50, right: 50 })
+    expect(paceGaugeBar(0)).toEqual({ left: 50, right: 50 })
+    expect(paceGaugeBar(12.5)).toEqual({ left: 25, right: 50 })
+    expect(paceGaugeBar(40)).toEqual({ left: 0, right: 50 })
+    expect(paceGaugeBar(-7.5)).toEqual({ left: 50, right: 25 })
+    expect(paceGaugeBar(-30)).toEqual({ left: 50, right: 0 })
+    // 허용 범위 ±2초: 왼쪽은 25초 중 2초, 오른쪽은 15초 중 2초라 오른쪽이 더 넓다
+    const tol = paceGaugeTolerance()
+    expect(tol.left).toBeCloseTo(4, 6)
+    expect(tol.right).toBeCloseTo(6.6667, 3)
+    const ticks = paceGaugeTicks()
+    expect(ticks.map(t => t.seconds)).toEqual([-25, -20, -15, -10, -5, 5, 10, 15])
+    expect(ticks[0]!.pct).toBe(0)
+    expect(ticks[ticks.length - 1]!.pct).toBe(100)
+  })
+})

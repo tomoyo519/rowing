@@ -15,7 +15,8 @@
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
     "shot": "node tools/shot.mjs shots",
-    "shot:rig": "node tools/rigshot.mjs shots/rig-head.png"
+    "shot:rig": "node tools/rigshot.mjs shots/rig-head.png",
+    "shot:hud": "node tools/hudshot.mjs shots both"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.54.0",

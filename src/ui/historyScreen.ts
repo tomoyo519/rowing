@@ -1,7 +1,9 @@
 import {
   loadHistory, deleteRecord, totals, personalBest, type SessionRecord,
 } from '../game/history'
+import { COURSES } from '../game/courses'
 import { formatSplit, formatClock } from '../game/physics'
+import { deltaChipHtml, escapeHtml, renderSplitChart } from './charts'
 
 /** 기록 화면 렌더링 */
 export function renderHistory(onBack: () => void) {
@@ -15,7 +17,7 @@ export function renderHistory(onBack: () => void) {
     ['총 거리', `${(t.distance / 1000).toFixed(1)}<span>km</span>`],
     ['총 시간', `${Math.round(t.seconds / 3600)}<span>h</span>`],
     ['총 스트로크', `${t.strokes.toLocaleString('ko-KR')}`],
-  ].map(([k, v]) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join('')
+  ].map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('')
 
   if (!history.length) {
     list.innerHTML = '<div class="empty">아직 기록이 없습니다.<br>코스를 한 번 완주하면 여기에 쌓입니다.</div>'
@@ -30,11 +32,15 @@ export function renderHistory(onBack: () => void) {
     }
 
     list.innerHTML = history.map(r => row(r, pbByCourse.get(r.courseId) === r.id)).join('')
+    const byId = new Map(history.map(r => [r.id, r]))
 
     for (const el of list.querySelectorAll<HTMLElement>('.hrow')) {
       el.addEventListener('click', ev => {
-        if ((ev.target as HTMLElement).classList.contains('link-btn')) return
+        const target = ev.target as HTMLElement
+        if (target.classList.contains('link-btn') || target.closest('.htable') || target.closest('.hchart')) return
         el.classList.toggle('open')
+        // 폭을 재서 그리므로 펼쳐진 뒤에 그린다
+        if (el.classList.contains('open')) drawChart(el, byId)
       })
     }
     for (const btn of list.querySelectorAll<HTMLElement>('.link-btn')) {
@@ -45,18 +51,44 @@ export function renderHistory(onBack: () => void) {
         renderHistory(onBack)
       })
     }
+    // 화면이 돌아가면 펼쳐진 차트를 새 폭으로 다시 그린다
+    resizeObserver?.disconnect()
+    resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      for (const el of list.querySelectorAll<HTMLElement>('.hrow.open')) drawChart(el, byId)
+    })
+    resizeObserver?.observe(list)
   }
 
   const back = document.getElementById('btn-hist-back')!
   back.onclick = onBack
 }
 
+let resizeObserver: ResizeObserver | null = null
+
+function drawChart(rowEl: HTMLElement, byId: Map<string, SessionRecord>) {
+  const host = rowEl.querySelector<HTMLElement>('.hchart-host')
+  const record = byId.get(host?.dataset.id ?? '')
+  if (!host || !record) return
+  const width = host.clientWidth
+  if (host.dataset.width === String(width) && host.childElementCount > 0) return
+  host.dataset.width = String(width)
+  renderSplitChart(host, {
+    id: `h-${record.id}`,
+    curve: record.curve,
+    baseSplit: Number(record.baseSplit),
+    course: COURSES.find(c => c.id === record.courseId) ?? null,
+    durationSec: record.durationSec,
+  })
+}
+
 function row(r: SessionRecord, isPb: boolean): string {
+  const base = Number(r.baseSplit)
+  const splitDelta = isFinite(base) && isFinite(r.avgSplit) ? deltaChipHtml(r.avgSplit - base, 's', '목표 대비', false) : ''
   return `
   <div class="hrow">
     <div class="hrow-top">
       <div>
-        <span class="nm">${esc(r.courseName)}</span>
+        <span class="nm">${escapeHtml(r.courseName)}</span>
         ${isPb ? '<span class="pb">PB</span>' : ''}
         ${r.completed ? '' : '<span class="dnf">중단</span>'}
       </div>
@@ -69,47 +101,20 @@ function row(r: SessionRecord, isPb: boolean): string {
       <span><b>${r.avgSpm.toFixed(1)}</b> spm</span>
     </div>
     <div class="hrow-detail">
-      ${curve(r)}
+      <div class="hchart-host" data-id="${escapeHtml(r.id)}"></div>
+      <div class="chips" style="margin:12px 0 0">
+        ${splitDelta}
+        ${deltaChipHtml(r.gap, 'm', '페이스 보트 대비')}
+      </div>
       <div class="sub" style="margin-top:12px">
         <span>평균 파워 <b>${Math.round(r.avgPower)}</b>W</span>
         <span>스트로크 <b>${r.strokeCount}</b></span>
-        <span>페이스 보트 <b>${r.gap >= 0 ? '+' : ''}${Math.round(r.gap)}</b>m</span>
       </div>
       <div class="hrow-actions">
-        <button class="link-btn" data-id="${r.id}">이 기록 삭제</button>
+        <button class="link-btn" data-id="${escapeHtml(r.id)}">이 기록 삭제</button>
       </div>
     </div>
   </div>`
-}
-
-/** 스플릿 곡선. y축은 뒤집는다 — 스플릿이 작을수록 빠르므로 위가 빠른 쪽. */
-function curve(r: SessionRecord): string {
-  const pts = r.curve.filter(p => isFinite(p.split) && p.split > 0)
-  if (pts.length < 2) return '<div class="hcurve-cap"><span>곡선을 그릴 기록이 부족합니다</span></div>'
-
-  const W = 100, H = 40
-  const splits = pts.map(p => p.split)
-  const lo = Math.min(...splits), hi = Math.max(...splits)
-  const span = hi - lo || 1
-  const tMax = pts[pts.length - 1]!.t || 1
-
-  const path = pts
-    .map(p => `${(p.t / tMax) * W},${((p.split - lo) / span) * (H - 4) + 2}`)
-    .join(' ')
-
-  return `
-    <div class="hchart">
-      <svg class="hcurve" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
-        <polyline points="${path}" class="hcurve-line" />
-      </svg>
-      <span class="hy hy-top">${formatSplit(lo)}</span>
-      <span class="hy hy-bot">${formatSplit(hi)}</span>
-    </div>
-    <div class="hcurve-cap">
-      <span>0:00</span>
-      <span>스플릿 추이 · 위가 빠름</span>
-      <span>${formatClock(tMax)}</span>
-    </div>`
 }
 
 function when(iso: string): string {
@@ -121,9 +126,4 @@ function when(iso: string): string {
     ? `${d.getMonth() + 1}월 ${d.getDate()}일`
     : `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`
   return `${date} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-function esc(s: string): string {
-  return s.replace(/[&<>"']/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
 }

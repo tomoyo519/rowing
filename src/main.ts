@@ -4,13 +4,13 @@ import {
   COURSES, PACE_TIERS, courseGroups, projectedDistance, courseRangeLabel,
   type Course, type PaceTier,
 } from './game/courses'
-import { profileSamples } from './game/profile'
-import { paceGaugeState } from './game/paceGauge'
 import { Session, type Phase, type StallReason } from './game/state'
 import { buildFeedback } from './game/feedback'
 import { saveRecord, thinCurve, personalBest, type SessionRecord } from './game/history'
 import { FeedbackModal } from './ui/feedbackModal'
 import { renderHistory } from './ui/historyScreen'
+import { RaceHud } from './ui/raceHud'
+import { deltaChipHtml, renderSplitChart, sparklineSvg } from './ui/charts'
 import { View } from './three/view'
 import type { RigBody } from './three/rig'
 import { formatSplit, formatSplitShort, formatClock } from './game/physics'
@@ -18,13 +18,7 @@ import { RowingMetronome } from './audio/metronome'
 import { AudioCues } from './audio/cues'
 import { AMBIENT_AUDIO_ATTRIBUTION_URL, AmbientSoundscape } from './audio/ambience'
 import { loadGhost } from './game/ghost'
-import {
-  createCoursePath,
-  localPathPoint,
-  PACE_LANE_OFFSET,
-  PLAYER_LANE_OFFSET,
-  type CoursePath,
-} from './game/coursePath'
+import { createCoursePath, type CoursePath } from './game/coursePath'
 import type { RowerSource } from './types'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
@@ -270,18 +264,6 @@ function pbLine(c: Course): string {
   return `<div class="pb">내 최고 ${(pb.distance / 1000).toFixed(2)} km · ${formatSplitShort(pb.avgSplit)}/500m</div>`
 }
 
-/** 코스 강도 프로파일을 미니 그래프(SVG)로 */
-function sparkline(c: Course): string {
-  const s = profileSamples(c.profile, c.durationSec, 72)
-  const W = 100, H = 26
-  const pts = s.map((v, i) => `${(i / (s.length - 1)) * W},${H - 3 - v * (H - 6)}`).join(' ')
-  const area = `0,${H} ${pts} ${W},${H}`
-  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
-    <polygon points="${area}" class="spark-fill" />
-    <polyline points="${pts}" class="spark-line" />
-  </svg>`
-}
-
 function renderCourses() {
   const el = $('courses')
   el.innerHTML = ''
@@ -301,7 +283,7 @@ function renderCourses() {
     for (const c of group.courses) {
       const dist = projectedDistance(c, selectedTier.split)
       const b = document.createElement('button')
-      b.className = 'course' + (c.id === selectedCourse.id ? ' sel' : '')
+      b.className = `course ${group.tone}` + (c.id === selectedCourse.id ? ' sel' : '')
       b.innerHTML = `
         <div class="chead">
           <div>
@@ -313,12 +295,12 @@ function renderCourses() {
             <div class="tag">${c.type}</div>
           </div>
         </div>
-        ${sparkline(c)}
-        ${pbLine(c)}
+        ${sparklineSvg(c)}
         <div class="range">페이스 ${courseRangeLabel(c)}</div>
+        ${pbLine(c)}
         <div class="desc">${c.description}</div>
         <div class="est">
-          <b>${(dist / 1000).toFixed(2)} km</b>
+          <b class="num">${(dist / 1000).toFixed(2)}<i>km</i></b>
           <span>${selectedTier.label} 기준 예상</span>
         </div>`
       b.addEventListener('click', () => { selectedCourse = c; renderCourses() })
@@ -352,9 +334,9 @@ const feedbackModal = new FeedbackModal()
 const metronome = new RowingMetronome()
 const cues = new AudioCues(metronome)
 const ambience = new AmbientSoundscape(metronome)
+const hud = new RaceHud()
 let racePath: CoursePath = createCoursePath(selectedCourse.id)
 let raceTotal = 1
-let lastMiniMapAt = -1
 
 function syncSoundButton() {
   const button = $<HTMLButtonElement>('btn-sound')
@@ -391,8 +373,8 @@ let lastStepIntensity = 1
 /** 출발 대기 → 출발 전환을 잡기 위한 직전 세션 상태 */
 let lastPhase: Phase | null = null
 
-window.addEventListener('resize', () => view?.resize())
-window.addEventListener('orientationchange', () => setTimeout(() => view?.resize(), 150))
+window.addEventListener('resize', () => { view?.resize(); if (view) hud.resize() })
+window.addEventListener('orientationchange', () => setTimeout(() => { view?.resize(); if (view) hud.resize() }, 150))
 
 async function startRace() {
   if (!source) return
@@ -417,7 +399,6 @@ async function startRace() {
   // onStatus는 다음 변화부터 알려주므로 현재 상태도 즉시 반영한다.
   session.setLinkDown(source.status !== 'connected')
 
-  $('ghost-gap').classList.toggle('on', ghost !== null)
   lastStepLabel = null
   lastStallReason = null
   lastCheckpoint = 0
@@ -425,9 +406,9 @@ async function startRace() {
   $('ble-race-alert').classList.remove('on')
   racePath = createCoursePath(selectedCourse.id)
   raceTotal = projectedDistance(selectedCourse, selectedTier.split)
-  lastMiniMapAt = -1
-  renderRaceProfile()
   show('screen-race')
+  // 코스 띠는 폭을 재서 그리므로 화면이 보인 뒤에 만든다
+  hud.start(selectedCourse, racePath, raceTotal, ghost !== null)
   view?.dispose()
   view = new View(cv, session, avatarBody)
   view.resize()
@@ -475,14 +456,18 @@ async function runCountdown(generation: number) {
   const cd = $('countdown')
   const num = $('cd-num')
   const sub = $('cd-sub')
+  const wrap = $('cd-wrap')
   const show = (text: string, hint: string, ready = false) => {
     num.textContent = text
     sub.textContent = hint
     cd.classList.toggle('ready', ready)
-    // 애니메이션을 숫자마다 처음부터 다시 돌린다
+    cd.classList.toggle('go', text === '시작')
+    // 애니메이션을 숫자마다 처음부터 다시 돌린다 — 숫자와 1초 링이 함께 다시 시작한다
     num.classList.remove('pop')
+    wrap.classList.remove('pop')
     void num.offsetWidth
     num.classList.add('pop')
+    wrap.classList.add('pop')
   }
   const alive = () => generation === countdownGeneration
   countdownVisible = true
@@ -552,7 +537,7 @@ function frame(now: number) {
       strokeCue,
       presence: view.getAmbientPresence(),
     })
-    updateHud()
+    updateHud(dt)
     checkFeedback()
     if (session.phase === 'finished') {
       if (session.metrics().progress >= 0.999) cues.finish()
@@ -588,112 +573,7 @@ function checkFeedback() {
 
 let lmShownAt = -1
 
-function renderRaceProfile() {
-  const track = $('race-profile')
-  const parts = profileSamples(selectedCourse.profile, selectedCourse.durationSec, 12)
-    .map(value => {
-      const part = document.createElement('span')
-      part.className = value < 0.97 ? 'easy' : value > 1.03 ? 'hard' : 'steady'
-      part.title = `목표 강도 ${Math.round(value * 100)}%`
-      return part
-    })
-  const progress = document.createElement('i')
-  progress.id = 's-prog'
-  track.replaceChildren(...parts, progress)
-  $('route-total').textContent = `${(raceTotal / 1000).toFixed(1)} km`
-}
-
-function drawMiniMap(distance: number, gap: number) {
-  const canvas = $<HTMLCanvasElement>('mini-map')
-  const cssSize = Math.max(90, canvas.clientWidth || 118)
-  const ratio = Math.min(window.devicePixelRatio || 1, 2)
-  const pixels = Math.round(cssSize * ratio)
-  if (canvas.width !== pixels || canvas.height !== pixels) {
-    canvas.width = pixels
-    canvas.height = pixels
-  }
-  const context = canvas.getContext('2d')
-  if (!context) return
-  context.setTransform(ratio, 0, 0, ratio, 0, 0)
-  const size = canvas.width / ratio
-  const center = size / 2
-  const baseY = size * 0.83
-  const scaleForward = (size * 0.72) / 430
-  const scaleSide = size / 54
-  const mapPoint = (along: number, lateral: number) => {
-    const point = localPathPoint(
-      racePath, distance, along, lateral, PLAYER_LANE_OFFSET,
-    )
-    return { x: center + point.z * scaleSide, y: baseY - point.x * scaleForward }
-  }
-
-  context.clearRect(0, 0, size, size)
-  context.save()
-  context.beginPath()
-  context.arc(center, center, center - 2, 0, Math.PI * 2)
-  context.clip()
-  context.fillStyle = 'rgba(8,17,25,.72)'
-  context.fillRect(0, 0, size, size)
-
-  const drawPath = (lateral: number, color: string, width: number) => {
-    context.beginPath()
-    for (let along = -70, i = 0; along <= 440; along += 10, i++) {
-      const point = mapPoint(along, lateral)
-      if (i === 0) context.moveTo(point.x, point.y)
-      else context.lineTo(point.x, point.y)
-    }
-    context.strokeStyle = color
-    context.lineWidth = width
-    context.lineCap = 'round'
-    context.lineJoin = 'round'
-    context.stroke()
-  }
-  drawPath(0, 'rgba(54,188,229,.78)', 12)
-  drawPath(BANK_MINI_OFFSET, 'rgba(220,230,232,.52)', 2.5)
-  drawPath(-BANK_MINI_OFFSET, 'rgba(220,230,232,.52)', 2.5)
-  drawPath(0, 'rgba(6,31,42,.55)', 1.5)
-
-  const finishAlong = raceTotal - distance
-  if (finishAlong > -35 && finishAlong < 440) {
-    const left = mapPoint(finishAlong, 8)
-    const right = mapPoint(finishAlong, -8)
-    context.beginPath()
-    context.moveTo(left.x, left.y)
-    context.lineTo(right.x, right.y)
-    context.setLineDash([3, 3])
-    context.strokeStyle = '#fff'
-    context.lineWidth = 3
-    context.stroke()
-    context.setLineDash([])
-  }
-
-  const pace = localPathPoint(
-    racePath, distance, -gap, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET,
-  )
-  const paceX = center + pace.z * scaleSide
-  const paceY = baseY - pace.x * scaleForward
-  if (paceY > -8 && paceY < size + 8) {
-    context.beginPath()
-    context.arc(paceX, paceY, 3.4, 0, Math.PI * 2)
-    context.fillStyle = '#ff7b60'
-    context.fill()
-  }
-
-  context.beginPath()
-  context.moveTo(center, baseY - 7)
-  context.lineTo(center - 5.5, baseY + 6)
-  context.lineTo(center + 5.5, baseY + 6)
-  context.closePath()
-  context.fillStyle = '#fff'
-  context.fill()
-  context.restore()
-
-  $('mini-caption').textContent = `${(distance / 1000).toFixed(1)} / ${(raceTotal / 1000).toFixed(1)} km`
-}
-
-const BANK_MINI_OFFSET = 15
-
-function updateHud() {
+function updateHud(dt: number) {
   if (!session || !view) return
   const m = session.metrics()
 
@@ -715,58 +595,8 @@ function updateHud() {
   if (lastPhase === 'armed' && session.phase === 'running') cues.launch()
   lastPhase = session.phase
 
-  const splitText = formatSplitShort(m.split)
-  $('s-split').textContent = splitText
-  // 값이 없을 땐 왜 없는지 알려준다 — '--:--'만 덩그러니 있으면 고장난 것처럼 보인다
-  $('dial-u').textContent = splitText === '--:--' ? '노를 저으면 표시됩니다' : '500m당 시간'
-  $('s-target').textContent = formatSplitShort(m.targetSplit)
-  $('s-dist').textContent = String(Math.round(m.distance))
-  $('s-time').textContent = formatClock(m.elapsed)
-  $('s-speed').textContent = (m.speed * 3.6).toFixed(1)
-  $('s-calories').textContent = m.calories === undefined ? '—' : String(Math.round(m.calories))
-  // 심박은 콘솔에 벨트가 붙어 있을 때만 온다. 없으면 0이나 빈칸 대신 '—'
-  $('s-hr').textContent = m.heartRate === undefined || m.heartRate <= 0 ? '—' : String(Math.round(m.heartRate))
-  $('s-spm').textContent = String(Math.round(m.spm))
-  $('s-pow').textContent = String(Math.round(m.power))
-  // 시간제 코스라 실제 완주 거리는 정해져 있지 않다. 페이스 보트 기준 예상 잔여 거리임을 명시한다.
-  const targetLeft = m.remaining <= 0 ? 0 : Math.max(0, Math.round(raceTotal - m.distance + m.gap))
-  $('s-remaining').textContent = `${formatClock(m.remaining)} 남음 · 목표 약 ${targetLeft.toLocaleString('en-US')}m`
-
-  // 목표 대비 얼마나 벗어났는지 색으로. 값이 없으면 색도 없다 — 빨간 '--:--'는 고장처럼 보인다.
-  const off = m.split - m.targetSplit
-  const tone = splitText === '--:--' ? '' : off < -1.5 ? 'fast' : off > 1.5 ? 'slow' : ''
-  $('s-split').className = 'v ' + tone
-  updatePaceGauge(m.split, m.targetSplit, m.gap)
-  $('pace-dial').style.setProperty('--dial-fill', `${Math.max(8, session.stroke.phase * 270)}deg`)
-
-  // 현재 구간
-  const seg = $('segment')
-  seg.querySelector('.seg-label')!.textContent = m.step.label
-  const rem = seg.querySelector('.seg-rem') as HTMLElement
-  rem.textContent = m.step.remaining !== null ? formatClock(m.step.remaining) : ''
-  seg.classList.toggle('hard', m.intensity > 1.03)
-  seg.classList.toggle('easy', m.intensity < 0.97)
-
-  // 다음 구간 — 몇 초 뒤에 어떤 페이스로 바뀌는지 미리 보여준다
-  const next = $('next-panel')
-  $('s-next-label').textContent = m.nextStep ? m.nextStep.label : '구간 변화 없음'
-  $('s-next-in').textContent = m.nextStep ? `${formatClock(m.nextStep.startsIn)} 뒤` : ''
-  $('s-next-target').textContent = m.nextTargetSplit === null ? '—' : formatSplitShort(m.nextTargetSplit)
-  next.classList.toggle('hard', m.nextStep !== null && m.nextStep.intensity > m.intensity + 0.02)
-  next.classList.toggle('easy', m.nextStep !== null && m.nextStep.intensity < m.intensity - 0.02)
-
-  const gap = $('s-gap')
-  const g = Math.round(m.gap)
-  gap.textContent = `${g >= 0 ? '+' : ''}${g}m`
-  gap.className = 'g ' + (g >= 0 ? 'ahead' : 'behind')
-
-  // 지난 최고 기록 대비
-  if (m.ghostGap !== null) {
-    const gg = Math.round(m.ghostGap)
-    const el = $('s-ghost-gap')
-    el.textContent = `${gg >= 0 ? '+' : ''}${gg}m`
-    el.className = 'gv ' + (gg >= 0 ? 'ahead' : 'behind')
-  }
+  // 숫자·게이지·코스 띠·미니맵
+  hud.update(m, session.stroke, session.phase === 'running', dt)
 
   // 구간이 바뀌면 소리로 알린다 — 화면을 안 봐도 되게
   if (lastStepLabel !== null && m.step.label !== lastStepLabel) {
@@ -794,12 +624,6 @@ function updateHud() {
     }
   }
 
-  $('s-prog').style.width = `${m.progress * 100}%`
-  if (lastMiniMapAt < 0 || m.elapsed - lastMiniMapAt >= 0.1) {
-    lastMiniMapAt = m.elapsed
-    drawMiniMap(m.distance, m.gap)
-  }
-
   // 랜드마크 이름 — 지나갈 때만 잠깐
   const lm = view.nearestLandmark(session)
   const el = $('landmark')
@@ -809,38 +633,6 @@ function updateHud() {
     lmShownAt = m.elapsed
   } else if (m.elapsed - lmShownAt > 0.5) {
     el.style.opacity = '0'
-  }
-}
-
-function updatePaceGauge(split: number, targetSplit: number, gap: number) {
-  const gauge = $('pace-gauge')
-  const g = paceGaugeState(split, targetSplit)
-  gauge.style.setProperty('--pg-fill', `${(g.fill * 100).toFixed(1)}%`)
-  gauge.style.setProperty('--pg-target', `${(g.target * 100).toFixed(1)}%`)
-  gauge.style.setProperty(
-    '--pg-color',
-    g.state === 'behind' ? '#ff6252' : g.state === 'ahead' ? '#4bc67a' : '#36bce5',
-  )
-  gauge.className = `pace-gauge ${g.state}`
-  $('pg-target').textContent = formatSplitShort(targetSplit)
-
-  const msg = $('pg-msg')
-  const boat = gap >= 0 ? `페이스 보트보다 ${Math.round(gap)}m 앞` : `페이스 보트보다 ${Math.abs(Math.round(gap))}m 뒤`
-  switch (g.state) {
-    case 'idle':
-      msg.textContent = '노를 저어 목표 선까지 끌어올리세요'
-      break
-    case 'behind':
-      msg.textContent = g.delta > 60
-        ? `목표 속도까지 한참 남음 · 더 세게 당기세요 · ${boat}`
-        : `목표보다 ${Math.round(g.delta)}초 느림 · 더 세게 당기세요 · ${boat}`
-      break
-    case 'ok':
-      msg.textContent = `목표 페이스 유지 중 · ${boat}`
-      break
-    case 'ahead':
-      msg.textContent = `목표보다 ${Math.round(-g.delta)}초 빠름 · ${boat}`
-      break
   }
 }
 
@@ -860,7 +652,8 @@ function showSummary() {
   feedbackModal.reset()
   releaseWakeLock()
 
-  $('sum-title').textContent = m.progress >= 0.999 ? '코스 완주' : '세션 종료'
+  const completed = m.progress >= 0.999
+  $('sum-title').textContent = completed ? '코스 완주' : '세션 종료'
 
   const beat = m.gap >= 0
   const lines = [
@@ -870,17 +663,19 @@ function showSummary() {
   ]
 
   // 고스트(지난 최고 기록) 대비.
-  // ⚠️ 이번 세션을 저장하기 전에 비교해야 한다 — 저장 후엔 이번 기록이 최고가 되어버린다.
+  // ⚠️ 이번 세션을 저장하기 전에 비교해야 한다 — 저장 후엔 이번 기록이 최고가 되어버린다
   const prevBest = s.ghost?.record ?? null
-  if (prevBest && m.progress >= 0.999) {
+  let newRecord = false
+  if (prevBest && completed) {
     const diff = m.distance - prevBest.distance
     lines.push(
       diff >= 0
         ? `지난 최고 기록을 <b>${Math.round(diff)}m</b> 넘었습니다. 새 기록입니다.`
         : `지난 최고 기록에 <b>${Math.abs(Math.round(diff))}m</b> 못 미쳤습니다.`,
     )
-    if (diff >= 0) $('sum-title').textContent = '새 최고 기록'
+    if (diff >= 0) { newRecord = true; $('sum-title').textContent = '새 최고 기록' }
   }
+  $('screen-summary').classList.toggle('pb', newRecord)
   $('sum-verdict').innerHTML = lines.join('<br>')
 
   const n = s.track.length
@@ -905,26 +700,41 @@ function showSummary() {
       avgPower: avgPow,
       strokeCount: m.strokeCount,
       gap: m.gap,
-      completed: m.progress >= 0.999,
+      completed,
       curve: thinCurve(s.track),
     }
     saveRecord(rec)
   }
 
+  // 거리는 한 번만 크게 — 나머지는 타일. 비교는 칩으로 (글리프 + 글자, 색만으로 뜻을 나르지 않는다)
+  $('sum-dist').textContent = (m.distance / 1000).toFixed(2)
+  $('sum-course').textContent = `${s.course.name} · ${s.course.venue.location}`
+  const chips = [deltaChipHtml(m.gap, 'm', '페이스 보트 대비')]
+  if (isFinite(m.avgSplit) && m.distance > 50) chips.push(deltaChipHtml(m.avgSplit - s.baseSplit, 's', '목표 스플릿 대비', false))
+  if (prevBest && completed) chips.push(deltaChipHtml(m.distance - prevBest.distance, 'm', '내 최고 대비'))
+  $('sum-chips').innerHTML = chips.join('')
+
+  const avgSpeed = m.elapsed > 0 ? (m.distance / m.elapsed) * 3.6 : 0
   const cells: [string, string][] = [
-    ['거리', `${(m.distance / 1000).toFixed(2)}<span>km</span>`],
     ['시간', formatClock(m.elapsed)],
-    ['평균 스플릿', formatSplit(m.avgSplit)],
+    ['평균 스플릿', `${formatSplit(m.avgSplit)}<span>/500m</span>`],
+    ['평균 속도', `${avgSpeed.toFixed(1)}<span>km/h</span>`],
     ['평균 SPM', avgSpm.toFixed(1)],
     ['평균 파워', `${Math.round(avgPow)}<span>W</span>`],
     ['스트로크', String(m.strokeCount)],
   ]
   $('sumgrid').innerHTML = cells
-    .map(([k, v]) => `<div class="sumcell"><div class="k">${k}</div><div class="v">${v}</div></div>`)
+    .map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`)
     .join('')
 
   show('screen-summary')
+  // 차트는 폭을 재서 그리므로 화면이 보인 뒤에 그린다
+  const curve = thinCurve(s.track, 30)
+  requestAnimationFrame(() => renderSplitChart($('sum-chart'), {
+    id: 'sum', curve, baseSplit: s.baseSplit, course: s.course, durationSec: s.course.durationSec,
+  }))
 }
+
 
 $('btn-again').addEventListener('click', () => goCourseSelect())
 

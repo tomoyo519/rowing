@@ -1,4 +1,8 @@
 import * as THREE from 'three'
+import { carbonMaps } from './textures'
+
+/** 노 퍼들(수면의 소용돌이 원반)의 최대 투명도 */
+const PUDDLE_OPACITY = 0.26
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import type { Pose } from '../game/stroke'
 
@@ -150,6 +154,7 @@ export function createRacingHullGeometry() {
   const sections = 25
   const ringSegments = 14
   const positions: number[] = []
+  const uvs: number[] = []
   const indices: number[] = []
 
   for (let i = 0; i < sections; i++) {
@@ -169,6 +174,8 @@ export function createRacingHullGeometry() {
         centerY + sin * halfHeight * yScale,
         Math.cos(angle) * halfWidth,
       )
+      // 탄소섬유 결: 선체 길이 방향으로 20cm마다, 둘레로 세 번 반복
+      uvs.push(t * (RACING_HULL_LENGTH / 0.2), (j / ringSegments) * 3)
     }
   }
 
@@ -186,8 +193,10 @@ export function createRacingHullGeometry() {
   // 정중앙 후방 카메라에서도 열린 단면이 보이지 않도록 양 끝을 막는다.
   const startCenter = positions.length / 3
   positions.push(-RACING_HULL_LENGTH / 2, 0.055, 0)
+  uvs.push(0, 0)
   const endCenter = positions.length / 3
   positions.push(RACING_HULL_LENGTH / 2, 0.055, 0)
+  uvs.push(RACING_HULL_LENGTH / 0.2, 0)
   const endRing = (sections - 1) * ringSegments
   for (let j = 0; j < ringSegments; j++) {
     const next = (j + 1) % ringSegments
@@ -197,6 +206,7 @@ export function createRacingHullGeometry() {
 
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
   geometry.setIndex(indices)
   geometry.computeVertexNormals()
   geometry.computeBoundingBox()
@@ -475,8 +485,10 @@ export class Rig {
     })
     const shorts = this.physical(c.shorts, { roughness: 0.78, sheen: 0.4 })
     const hairMat = this.mat(c.hair, { roughness: 0.88 })
+    // 클리어코트 아래의 탄소섬유 능직 — 노멀맵만 쓴다 (색까지 곱하면 도색이 검게 죽는다)
     const hullMat = this.physical(c.hull, {
       roughness: 0.32, metalness: 0.08, clearcoat: 1, clearcoatRoughness: 0.14,
+      normalMap: carbonMaps().normalMap, normalScale: new THREE.Vector2(0.45, 0.45),
     })
     const metal = this.mat('#4a545f', { metalness: 0.45, roughness: 0.38 })
 
@@ -931,7 +943,7 @@ export class Rig {
         const power = Math.sin(pose.driveProgress * Math.PI)
         this.splash[i]!.position.set(blade.x, 0.10, blade.z)
         this.splash[i]!.scale.set(0.7 + power * 0.9, 0.3, 0.7 + power * 0.9)
-        spMat.opacity = 0.42 * power * this.opacity
+        spMat.opacity = 0.3 * power * this.opacity
       } else {
         spMat.opacity = 0
       }
@@ -944,7 +956,7 @@ export class Rig {
 
     const wakeMaterial = this.wake.material as THREE.MeshBasicMaterial
     const moving = Math.min(1, Math.max(0, speed / 4.8))
-    wakeMaterial.opacity = moving * 0.20 * this.opacity
+    wakeMaterial.opacity = moving * 0.11 * this.opacity
     this.wake.scale.x = 0.72 + moving * 0.55
   }
 
@@ -981,8 +993,9 @@ export class Rig {
 
       const mesh = new THREE.Mesh(
         new THREE.CircleGeometry(0.22, 14),
+        // 물은 어둡고 반사가 그림을 만드므로 퍼들은 옅어야 한다 — 짙으면 종이 원반처럼 떠 보인다
         new THREE.MeshBasicMaterial({
-          color: '#dff1ff', transparent: true, opacity: 0.5 * this.opacity,
+          color: '#cfe3f0', transparent: true, opacity: PUDDLE_OPACITY * this.opacity,
           depthWrite: false,
         }),
       )
@@ -1010,7 +1023,7 @@ export class Rig {
       p.mesh.position.x -= speed * dt
       const k = p.life / LIFE
       const m = p.mesh.material as THREE.MeshBasicMaterial
-      m.opacity = Math.max(0, (1 - k) * 0.5 * this.opacity)
+      m.opacity = Math.max(0, (1 - k) * PUDDLE_OPACITY * this.opacity)
       const s = 1 + k * 1.6
       p.mesh.scale.set(s, s, s)
       if (p.life > LIFE) {

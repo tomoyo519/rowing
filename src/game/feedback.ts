@@ -25,6 +25,10 @@ export interface Feedback {
   title: string
   body: string
   stats: [string, string][]
+  /** 구간 평균 스플릿 − 목표 스플릿 (초). +면 느림 */
+  delta: number
+  /** 페이스 보트 대비 거리차 (m). +면 앞섬 */
+  gap: number
 }
 
 /** 목표보다 이만큼(초) 빠르면/느리면 톤이 바뀐다 */
@@ -93,6 +97,8 @@ export function buildFeedback(
     tone,
     title: pick.title,
     body,
+    delta,
+    gap,
     stats: [
       [windowLabel, fmt(w.split)],
       ['목표', `${fmt(w.targetSplit)} (${sign}${Math.abs(delta).toFixed(1)}s)`],

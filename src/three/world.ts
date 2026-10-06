@@ -8,6 +8,12 @@ import {
   type WeatherBasePalette,
   type WeatherBlend,
 } from './weather'
+import { createSkyMaterial, createSkyUniforms, SkyEnvironment } from './sky'
+import { markReflective } from './reflection'
+import {
+  barkMaps, birchMaps, cloudPuffTexture, foamTexture, grassMaps, grassTuftTexture,
+  leafCardTexture, stoneMaps, type LeafCardKind,
+} from './textures'
 import {
   createCoursePath,
   localPathPoint,
@@ -45,6 +51,20 @@ const BUSH_COUNT = 30
 const BIRD_COUNT = 9
 const HILL_SEGMENT_LENGTH = 420
 const TREELINE_SEGMENT_LENGTH = 150
+/** 물가 갈대와 강둑 풀포기 — 인스턴스 하나씩. 품질 티어가 낮으면 일부만 보인다 */
+const REED_COUNT = 160
+const TUFT_COUNT = 240
+const REED_SPAN = 280
+const TUFT_SPAN = 320
+/** 강둑 절벽 대신 물속으로 이어지는 진흙 비탈 — 수면(y=0)이 비탈을 자르며 자연스러운 물가선이 생긴다 */
+const SHORE_SLOPE = 1.4
+/** 뭉게구름 한 덩이를 이루는 조각 배치 (x, y, z, 크기) */
+const CLOUD_PARTS: [number, number, number, number][] = [
+  [-1.25, -0.08, 0.02, 0.42], [-0.92, 0.02, 0.06, 0.56], [-0.48, 0.18, -0.04, 0.72],
+  [0, 0.30, 0.02, 0.9], [0.53, 0.18, -0.02, 0.76], [1.02, 0.02, 0.04, 0.56],
+  [1.32, -0.08, -0.02, 0.42], [-0.28, -0.12, 0.09, 0.66], [0.35, -0.12, 0.08, 0.7],
+  [-0.7, -0.14, -0.3, 0.5], [0.8, -0.14, -0.28, 0.52],
+]
 
 type Side = 1 | -1
 export type TreeKind = 'oak' | 'birch' | 'pine' | 'poplar' | 'willow' | 'maple'
@@ -130,6 +150,8 @@ interface LandmarkNode {
 
 interface FoliageMaterial {
   material: THREE.MeshStandardMaterial
+  /** 수관 겉면에 붙는 잎사귀 카드 (알파 컷아웃). 색은 material과 함께 바뀐다 */
+  cards: THREE.MeshStandardMaterial
   green: THREE.Color
   fall: THREE.Color
 }
@@ -538,29 +560,73 @@ function fillVertexColor(geometry: THREE.BufferGeometry, value: number) {
   return geometry
 }
 
-/** 수종별로 다른 실루엣. 줄기와 잎을 각각 메시 하나로 합친다. */
+const _cardNormal = new THREE.Vector3()
+const _cardPos = new THREE.Vector3()
+const _cardQuat = new THREE.Quaternion()
+const _cardSpin = new THREE.Quaternion()
+
+/**
+ * 잎 덩어리 표면에 잎사귀 카드를 흩뿌린다. 매끈한 구 실루엣이 잎 무더기로 깨지는 가장 싼 방법이다.
+ * 카드는 표면 법선을 향하고 법선 둘레로 무작위로 돌아가 있으며, 반은 표면에서 살짝 떠 있다.
+ */
+function scatterLeafCards(surface: THREE.BufferGeometry, count: number, size: number, seed: number) {
+  const position = surface.getAttribute('position') as THREE.BufferAttribute
+  const normal = surface.getAttribute('normal') as THREE.BufferAttribute
+  const cards: THREE.BufferGeometry[] = []
+  const random = seededRandom(`cards:${seed}`)
+  for (let i = 0; i < count; i++) {
+    const index = Math.floor(random() * position.count)
+    _cardPos.fromBufferAttribute(position, index)
+    _cardNormal.fromBufferAttribute(normal, index).normalize()
+    // 아래쪽 표면에는 카드를 덜 붙인다 — 밑에서 올려다보는 일이 드물고 그늘이라 보이지도 않는다
+    if (_cardNormal.y < -0.4 && random() < 0.6) continue
+    const s = size * (0.75 + random() * 0.5)
+    const card = new THREE.PlaneGeometry(s, s)
+    _cardQuat.setFromUnitVectors(Z_UNIT, _cardNormal)
+    _cardSpin.setFromAxisAngle(_cardNormal, random() * Math.PI * 2)
+    card.applyQuaternion(_cardQuat.premultiply(_cardSpin))
+    // 법선을 조금 기울여 카드가 서로 다른 각도로 빛을 받게 한다
+    card.rotateX((random() - 0.5) * 0.5)
+    card.translate(
+      _cardPos.x + _cardNormal.x * s * 0.12,
+      _cardPos.y + _cardNormal.y * s * 0.12,
+      _cardPos.z + _cardNormal.z * s * 0.12,
+    )
+    cards.push(card)
+  }
+  return cards
+}
+const Z_UNIT = new THREE.Vector3(0, 0, 1)
+
+/** 수종별로 다른 실루엣. 줄기·잎 덩어리·잎사귀 카드를 각각 메시 하나로 합친다. */
 function createTree(
   kind: TreeKind,
   leaf: THREE.Material,
   trunk: THREE.Material,
   birch: THREE.Material,
   phase: number,
+  cards?: THREE.Material,
 ) {
   const group = new THREE.Group()
   const trunkParts: THREE.BufferGeometry[] = []
   const leafParts: THREE.BufferGeometry[] = []
+  const cardParts: THREE.BufferGeometry[] = []
   let seed = Math.round(phase * 1000)
-  // 잎 덩어리: 세분화를 올리고 표면을 흐트러뜨려 부드럽고 울퉁불퉁한 수관을 만든다
+  // 잎 덩어리: 세분화를 올리고 표면을 흐트러뜨려 부드럽고 울퉁불퉁한 수관을 만든다.
+  // 카드가 있으면 덩어리는 조금 줄여 어두운 속을 맡고, 카드가 겉면의 잎이 된다.
+  const shrink = cards ? 0.9 : 1
   const sphere = (r: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1, rough = 0.09) => {
-    const g = roughen(new THREE.SphereGeometry(r, 22, 15), rough, seed++)
+    const g = roughen(new THREE.SphereGeometry(r * shrink, 22, 15), rough, seed++)
     g.scale(sx, sy, sz)
     g.translate(x, y, z)
     leafParts.push(g)
+    if (cards) cardParts.push(...scatterLeafCards(g, Math.round(9 + r * 6), r * 0.95, seed))
   }
   const cone = (r: number, h: number, y: number, rough = 0.12) => {
-    const g = roughen(new THREE.ConeGeometry(r, h, 16, 4), rough, seed++)
+    const g = roughen(new THREE.ConeGeometry(r * shrink, h, 16, 4), rough, seed++)
     g.translate(0, y, 0)
     leafParts.push(g)
+    if (cards) cardParts.push(...scatterLeafCards(g, Math.round(10 + r * 7), Math.max(0.9, r * 0.8), seed))
   }
   // 줄기: 아래가 굵고 살짝 휘어 있으며 뿌리 부분이 퍼진다
   const stem = (rTop: number, rBottom: number, h: number, lean = 0.06) => {
@@ -660,7 +726,24 @@ function createTree(
   leafMesh.castShadow = true
   leafMesh.name = 'foliage'
   group.add(trunkMesh, leafMesh)
+  if (cards && cardParts.length) {
+    const cardMesh = new THREE.Mesh(bakeCanopyShade(mergePlain(cardParts), Math.round(phase * 1000) + 7, 0.30), cards)
+    cardMesh.castShadow = true
+    cardMesh.name = 'foliage-cards'
+    group.add(cardMesh)
+  }
   return group
+}
+
+/** 풀 포기·갈대: 십자로 교차한 두 장의 판. 로컬 원점이 뿌리다. */
+function createTuftGeometry(width: number, height: number) {
+  const a = new THREE.PlaneGeometry(width, height)
+  a.translate(0, height / 2, 0)
+  const b = a.clone()
+  b.rotateY(Math.PI / 2)
+  const c = a.clone()
+  c.rotateY(Math.PI / 4)
+  return mergePlain([a, b, c])
 }
 
 // ── 사람과 동물 ─────────────────────────────────────────────
@@ -1158,32 +1241,6 @@ function createBannerGeometry(width: number) {
 
 // ── 하늘 ────────────────────────────────────────────────────
 
-function createCloud(
-  geometry: THREE.BufferGeometry,
-  material: THREE.Material,
-  phase: number,
-) {
-  const parts: [number, number, number, number][] = [
-    [-1.25, -0.08, 0.02, 0.42], [-0.92, 0.02, 0.06, 0.56], [-0.48, 0.18, -0.04, 0.72],
-    [0, 0.30, 0.02, 0.9], [0.53, 0.18, -0.02, 0.76], [1.02, 0.02, 0.04, 0.56],
-    [1.32, -0.08, -0.02, 0.42], [-0.28, -0.12, 0.09, 0.66], [0.35, -0.12, 0.08, 0.7],
-    [-0.7, -0.14, -0.3, 0.5], [0.8, -0.14, -0.28, 0.52],
-  ]
-  const cloud = new THREE.InstancedMesh(geometry, material, parts.length)
-  const mirror = Math.sin(phase) < 0 ? -1 : 1
-  const stretch = 0.92 + Math.abs(Math.cos(phase)) * 0.22
-  for (let i = 0; i < parts.length; i++) {
-    const [x, y, z, scale] = parts[i]!
-    _position.set(x * mirror * stretch, y, z + Math.sin(phase + i) * 0.045)
-    _scale.set(scale * (1.35 + stretch * 0.2), scale, scale * 0.92)
-    _matrix.compose(_position, _quaternion.identity(), _scale)
-    cloud.setMatrixAt(i, _matrix)
-  }
-  cloud.instanceMatrix.needsUpdate = true
-  cloud.computeBoundingSphere()
-  return cloud
-}
-
 /** 줄무늬 열기구. 봉투는 세로 띠를 색을 바꿔 가며 붙인다. */
 function createBalloonGeometry(colors: [string, string]) {
   const parts: THREE.BufferGeometry[] = []
@@ -1227,7 +1284,53 @@ function createBirdGeometry() {
 
 // ── 원경 ────────────────────────────────────────────────────
 
-/** 한쪽 강둑의 잔디 윗면과 물가 절벽을 하나의 저비용 리본으로 만든다. */
+/** 잔디 텍스처 타일 한 장의 크기 (m). 강둑·들판 uv는 미터 단위라 리본 전체에 이음매 없이 반복된다 */
+const GRASS_TILE = 6
+/** 강둑 잔디 윗면 높이 */
+const BANK_TOP_Y = 0.85
+/** 잔디 가장자리가 둥글게 꺾이는 턱 — 이 너비 안에서 SHORE_LIP_Y까지 내려간다 */
+const SHORE_LIP = 0.35
+const SHORE_LIP_Y = 0.62
+/** 진흙 비탈이 물속으로 내려가는 깊이 — 수면(y=0)이 비탈을 자르며 물가선이 생긴다 */
+const SHORE_BOTTOM_Y = -0.6
+/** 턱 아래 비탈의 수평 길이 (높이차 × 기울기) */
+const SHORE_RUN = (SHORE_LIP_Y - SHORE_BOTTOM_Y) * SHORE_SLOPE
+/** 물가선 — 잔디 가장자리(BANK_Z)에서 강 쪽으로 이만큼 들어간 곳에서 비탈이 수면과 만난다 */
+export const SHORELINE_INSET = SHORE_LIP + SHORE_LIP_Y * SHORE_SLOPE
+
+/** 잔디 가장자리(BANK_Z)에서 강 쪽으로 inset m 들어간 지점의 땅 높이 */
+export function shoreHeightAt(inset: number) {
+  if (inset <= 0) return BANK_TOP_Y
+  if (inset <= SHORE_LIP) return BANK_TOP_Y + (SHORE_LIP_Y - BANK_TOP_Y) * (inset / SHORE_LIP)
+  const t = Math.min(1, (inset - SHORE_LIP) / SHORE_RUN)
+  return SHORE_LIP_Y + (SHORE_BOTTOM_Y - SHORE_LIP_Y) * t
+}
+
+/** 리본의 정점 법선이 아래를 보면 삼각형 감김을 뒤집는다 — 그림자 normalBias와 노멀맵이 윗면 기준으로 작동해야 한다 */
+function orientRibbonUp(geometry: THREE.BufferGeometry) {
+  geometry.computeVertexNormals()
+  const normal = geometry.getAttribute('normal') as THREE.BufferAttribute
+  let up = 0
+  for (let i = 0; i < normal.count; i++) up += normal.getY(i)
+  if (up < 0) {
+    const index = geometry.getIndex()!
+    for (let i = 0; i < index.count; i += 3) {
+      const b = index.getX(i + 1)
+      index.setX(i + 1, index.getX(i + 2))
+      index.setX(i + 2, b)
+    }
+    index.needsUpdate = true
+    geometry.computeVertexNormals()
+  }
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/**
+ * 한쪽 강둑 — 잔디 윗면과, 절벽 대신 물속으로 이어지는 진흙 비탈을 하나의 저비용 리본으로 만든다.
+ * 단면은 네 줄: 들판 쪽 잔디, 잔디 가장자리, 둥근 턱, 물속 바닥. 정점색은 잔디 텍스처에 곱하는 얼룩이고,
+ * 비탈은 젖은 흙색이다.
+ */
 function createBankRibbon(
   path: CoursePath,
   side: Side,
@@ -1236,42 +1339,55 @@ function createBankRibbon(
 ) {
   const start = -500
   const count = Math.ceil((maxStation - start) / BANK_STEP) + 1
-  const positions = new Float32Array(count * 3 * 3)
-  const colors = new Float32Array(count * 3 * 3)
+  const rows = 4
+  const positions = new Float32Array(count * rows * 3)
+  const colors = new Float32Array(count * rows * 3)
+  const uvs = new Float32Array(count * rows * 2)
   const indices: number[] = []
+  // 단면: 들판 쪽에서 강 쪽으로 (측방 오프셋, 높이, 표면 거리 기준 v)
+  const profile: [number, number, number][] = [
+    [BANK_OUTER_Z, BANK_TOP_Y, 0],
+    [BANK_Z, BANK_TOP_Y, (BANK_OUTER_Z - BANK_Z) / GRASS_TILE],
+    [BANK_Z - SHORE_LIP, SHORE_LIP_Y, (BANK_OUTER_Z - BANK_Z + SHORE_LIP * 1.3) / GRASS_TILE],
+    [BANK_Z - SHORE_LIP - SHORE_RUN, SHORE_BOTTOM_Y, (BANK_OUTER_Z - BANK_Z + SHORE_LIP * 1.3 + SHORE_RUN * 1.2) / GRASS_TILE],
+  ]
 
   for (let i = 0; i < count; i++) {
     const station = start + i * BANK_STEP
-    const inner = offsetPathPoint(path, station, side * BANK_Z)
-    const outer = offsetPathPoint(path, station, side * BANK_OUTER_Z)
-    const offset = i * 9
-    positions.set([inner.x, 0.85, inner.z], offset)
-    positions.set([outer.x, 0.85, outer.z], offset + 3)
-    positions.set([inner.x, -0.35, inner.z], offset + 6)
-    // 잔디는 군데군데 마르고 짙다. 물가 절벽은 젖은 흙이라 어둡고 붉다.
     const g1 = grassShade(station, side * 3)
     const g2 = grassShade(station + 7, side * 5)
-    colors.set([g1, g1, g1 * 0.96], offset)
-    colors.set([g2, g2, g2 * 0.96], offset + 3)
-    colors.set([0.50, 0.42, 0.34], offset + 6)
-
+    const mud = 0.95 + (hashString(`mud:${Math.round(station)}:${side}`) / 4294967296 - 0.5) * 0.14
+    const shades: [number, number, number][] = [
+      [g1, g1, g1 * 0.96],
+      [g2, g2, g2 * 0.96],
+      // 턱은 마른 흙과 잔디가 섞이고, 물가 바닥은 젖어 어둡고 붉다
+      [0.62 * mud, 0.54 * mud, 0.44 * mud],
+      [0.40 * mud, 0.33 * mud, 0.27 * mud],
+    ]
+    for (let r = 0; r < rows; r++) {
+      const [lateral, y, v] = profile[r]!
+      const point = offsetPathPoint(path, station, side * lateral)
+      const offset = (i * rows + r) * 3
+      positions.set([point.x, y, point.z], offset)
+      colors.set(shades[r]!, offset)
+      uvs.set([station / GRASS_TILE, v], (i * rows + r) * 2)
+    }
     if (i === count - 1) continue
-    const a = i * 3
-    const b = a + 1
-    const e = a + 2
-    const c = a + 3
-    const d = a + 4
-    const f = a + 5
-    indices.push(a, b, c, b, d, c)
-    indices.push(a, c, e, c, f, e)
+    for (let r = 0; r < rows - 1; r++) {
+      const a = i * rows + r
+      const b = a + 1
+      const c = a + rows
+      const d = c + 1
+      indices.push(a, b, c, b, d, c)
+    }
   }
 
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
   geometry.setIndex(indices)
-  geometry.computeVertexNormals()
-  geometry.computeBoundingSphere()
+  orientRibbonUp(geometry)
   const mesh = new THREE.Mesh(geometry, material)
   mesh.receiveShadow = true
   return mesh
@@ -1282,6 +1398,44 @@ function grassShade(station: number, salt: number) {
   const slow = Math.sin(station * 0.045 + salt) * Math.sin(station * 0.011 + salt * 0.7)
   const speck = hashString(`grass:${Math.round(station)}:${salt}`) / 4294967296 - 0.5
   return 0.92 + slow * 0.08 + speck * 0.06
+}
+
+/**
+ * 물가선을 따라 깔리는 얕은 물·거품 띠. 수면 바로 위에 떠 있는 반투명 판으로, 비탈에 잘려 물가 모양을 따른다.
+ * v=0이 강 쪽(부드럽게 사라짐), v=1이 땅 쪽이다 — 재질 셰이더가 양 끝을 흐린다.
+ */
+function createShoreRibbon(
+  path: CoursePath,
+  side: Side,
+  maxStation: number,
+  material: THREE.Material,
+) {
+  const start = -500
+  const count = Math.ceil((maxStation - start) / BANK_STEP) + 1
+  const positions = new Float32Array(count * 2 * 3)
+  const uvs = new Float32Array(count * 2 * 2)
+  const indices: number[] = []
+  const waterSide = BANK_Z - SHORELINE_INSET - 0.75
+  const landSide = BANK_Z - SHORELINE_INSET + 0.45
+  for (let i = 0; i < count; i++) {
+    const station = start + i * BANK_STEP
+    const inner = offsetPathPoint(path, station, side * waterSide)
+    const outer = offsetPathPoint(path, station, side * landSide)
+    positions.set([inner.x, 0.07, inner.z], i * 6)
+    positions.set([outer.x, 0.07, outer.z], i * 6 + 3)
+    uvs.set([station / 5, 0, station / 5, 1], i * 4)
+    if (i === count - 1) continue
+    const a = i * 2
+    indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+  geometry.setIndex(indices)
+  geometry.computeBoundingSphere()
+  const mesh = new THREE.Mesh(geometry, material)
+  mesh.renderOrder = 1
+  return mesh
 }
 
 /** 강둑 바깥의 완만한 들판. 언덕과 숲이 물 위가 아니라 땅 위에 서게 한다. */
@@ -1296,17 +1450,20 @@ function createMeadowRibbon(
   const count = Math.ceil((maxStation - start) / step) + 1
   const positions = new Float32Array(count * 2 * 3)
   const colors = new Float32Array(count * 2 * 3)
+  const uvs = new Float32Array(count * 2 * 2)
   const indices: number[] = []
+  const innerZ = BANK_OUTER_Z - 0.5
   for (let i = 0; i < count; i++) {
     const station = start + i * step
-    const inner = offsetPathPoint(path, station, side * (BANK_OUTER_Z - 0.5))
+    const inner = offsetPathPoint(path, station, side * innerZ)
     const outer = offsetPathPoint(path, station, side * MEADOW_OUTER_Z)
-    positions.set([inner.x, 0.84, inner.z], i * 6)
+    positions.set([inner.x, BANK_TOP_Y - 0.01, inner.z], i * 6)
     positions.set([outer.x, 0.2, outer.z], i * 6 + 3)
     const g1 = grassShade(station + 3, side * 11)
     const g2 = grassShade(station + 13, side * 13) * 0.94
     colors.set([g1, g1, g1 * 0.96], i * 6)
     colors.set([g2, g2, g2], i * 6 + 3)
+    uvs.set([station / GRASS_TILE, 0, station / GRASS_TILE, (MEADOW_OUTER_Z - innerZ) / GRASS_TILE], i * 4)
     if (i === count - 1) continue
     const a = i * 2
     indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
@@ -1314,9 +1471,9 @@ function createMeadowRibbon(
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
   geometry.setIndex(indices)
-  geometry.computeVertexNormals()
-  geometry.computeBoundingSphere()
+  orientRibbonUp(geometry)
   return new THREE.Mesh(geometry, material)
 }
 
@@ -1365,31 +1522,38 @@ function createTreelineSegment(random: () => number) {
   return mergePlain(parts)
 }
 
+/** 인스턴스 풀포기 하나의 배치 */
+interface TuftPlacement {
+  baseX: number
+  z: number
+  /** 뿌리 높이 — 갈대는 비탈 위에 서고 풀포기는 잔디 위에 선다 */
+  y: number
+  scale: number
+  phase: number
+}
+
 export class World {
   readonly scene = new THREE.Scene()
   readonly water: Water
   readonly weather: WeatherSystem
   private sky: THREE.Mesh
+  /** 하늘을 구운 환경맵 — 모든 PBR 재질의 간접광·반사 */
+  private environment: SkyEnvironment
   private sun: THREE.DirectionalLight
   private hemi: THREE.HemisphereLight
   private ambient: THREE.AmbientLight
   private fog: THREE.Fog
   private bankMaterial: THREE.MeshStandardMaterial
   private hillMaterial: THREE.MeshStandardMaterial
-  private cloudMaterial!: THREE.MeshStandardMaterial
+  /** 물가선의 얕은 물·거품 띠 */
+  private shoreMaterial: THREE.MeshBasicMaterial
+  private shoreTexture: THREE.Texture
+  private tuftMaterial!: THREE.MeshStandardMaterial
+  private cloudMaterial!: THREE.MeshBasicMaterial
+  /** 모든 뭉게구름 조각을 담는 빌보드 인스턴스 메시 하나 */
+  private cloudPuffs!: THREE.InstancedMesh
   private moonMaterial!: THREE.MeshBasicMaterial
-  private skyUniforms = {
-    uTop: { value: new THREE.Color() },
-    uBottom: { value: new THREE.Color() },
-    /** 지평선 바로 위의 밝은 대기 띠 */
-    uHaze: { value: new THREE.Color() },
-    uCloud: { value: new THREE.Color() },
-    uSunColor: { value: new THREE.Color() },
-    uSunDir: { value: new THREE.Vector3(-105, 52, -20).normalize() },
-    uSunGlow: { value: 0 },
-    uCloudCover: { value: 0.2 },
-    uTime: { value: 0 },
-  }
+  private skyUniforms = createSkyUniforms()
   private baseWeatherPalette: WeatherBasePalette
   private weatherAppearance = createWeatherAppearance()
   private foliage: FoliageMaterial[] = []
@@ -1406,6 +1570,12 @@ export class World {
   private bushes: THREE.InstancedMesh[] = []
   private bushLayout: SceneryLayout['bushes'] = []
   private bushSpan = 1
+  private reeds!: THREE.InstancedMesh
+  private tufts!: THREE.InstancedMesh
+  private reedLayout: TuftPlacement[] = []
+  private tuftLayout: TuftPlacement[] = []
+  /** 품질 티어가 낮을 때 보이는 풀포기 비율 */
+  private vegetationScale = 1
   private landmarkGroup = new THREE.Group()
   private landmarkNodes: LandmarkNode[] = []
   /** 구간 경계선 — 페이스 보트가 다음 구간으로 넘어가는 자리에 강을 가로질러 그린다 */
@@ -1435,66 +1605,14 @@ export class World {
     }
     this.skyUniforms.uTop.value.copy(this.baseWeatherPalette.skyTop)
     this.skyUniforms.uBottom.value.copy(this.baseWeatherPalette.skyBottom)
-
     // ── 하늘 ────────────────────────────────────────────────
-    // 하늘: 지평선→천정 그라데이션 위에 지평선 헤이즈, 태양 글로우, 절차적 구름층(fbm)을 얹는다.
-    // 구름 덩어리 메시는 따로 있고, 여기 구름은 높이 깔린 얇은 층이라 하늘이 한 색으로 비어 보이지 않게 한다.
-    this.sky = new THREE.Mesh(
-      new THREE.SphereGeometry(400, 32, 20),
-      new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        depthWrite: false,
-        uniforms: this.skyUniforms,
-        vertexShader: /* glsl */`
-          varying vec3 vDir;
-          void main() {
-            vDir = normalize(position);
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: /* glsl */`
-          uniform vec3 uTop; uniform vec3 uBottom; uniform vec3 uHaze; uniform vec3 uCloud; uniform vec3 uSunColor;
-          uniform vec3 uSunDir; uniform float uSunGlow; uniform float uCloudCover; uniform float uTime;
-          varying vec3 vDir;
-          float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-          float vnoise(vec2 p) {
-            vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-            return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-          }
-          float fbm(vec2 p) {
-            float v = 0.0; float a = 0.5;
-            for (int k = 0; k < 4; k++) { v += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; }
-            return v;
-          }
-          void main() {
-            vec3 d = normalize(vDir);
-            float y = d.y;
-            float t = smoothstep(-0.15, 0.55, y);
-            vec3 col = mix(uBottom, uTop, t);
-            // 지평선 헤이즈 — 대기가 두꺼운 낮은 각도는 밝고 뿌옇다
-            float haze = exp(-max(y, 0.0) * 7.0);
-            col = mix(col, uHaze, haze * 0.7);
-            // 태양 글로우: 넓은 산란 + 좁은 코로나 + 원반
-            float sd = max(dot(d, uSunDir), 0.0);
-            col += uSunColor * uSunGlow * (pow(sd, 6.0) * 0.14 + pow(sd, 48.0) * 0.30 + pow(sd, 400.0) * 0.9);
-            // 구름층: 하늘 돔을 평면에 투영한 좌표에 fbm. 덮인 정도는 날씨가 정한다.
-            if (y > 0.015) {
-              vec2 uv = d.xz / (y + 0.14) * 0.6 + vec2(uTime * 0.0035, uTime * 0.0012);
-              float n = fbm(uv * 1.4) + fbm(uv * 4.2 + 5.0) * 0.25;
-              float cover = clamp(uCloudCover, 0.0, 1.0);
-              float cloud = smoothstep(0.66 - cover * 0.36, 0.86 - cover * 0.16, n);
-              cloud *= smoothstep(0.015, 0.16, y);
-              // 두꺼운 곳은 밑면이 살짝 어둡다
-              vec3 cloudCol = mix(uCloud, uCloud * 0.82, smoothstep(0.7, 1.0, n) * 0.6);
-              // 태양 근처의 구름은 빛을 받아 밝다
-              cloudCol += uSunColor * uSunGlow * pow(sd, 8.0) * 0.25;
-              col = mix(col, cloudCol, cloud * 0.9);
-            }
-            gl_FragColor = vec4(col, 1.0);
-          }
-        `,
-      }),
-    )
+    // 하늘 셰이더(sky.ts): 대기 그라데이션 + 지평선 헤이즈 + 태양 미 산란 + 두 층의 절차적 구름.
+    // 같은 재질을 PMREM으로 구워 scene.environment에 넣는다 — 모든 PBR 재질이 하늘빛을 반사한다.
+    const skyMaterial = createSkyMaterial(this.skyUniforms)
+    this.sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 20), skyMaterial)
+    this.sky.name = "sky"
+    this.environment = new SkyEnvironment(skyMaterial)
+    this.scene.environmentIntensity = 0.55
     this.scene.add(this.sky)
 
     // 안개로 원경을 하늘색에 녹여 깊이를 만든다
@@ -1502,54 +1620,83 @@ export class World {
     this.scene.fog = this.fog
 
     // ── 조명 ────────────────────────────────────────────────
+    // 하늘빛(환경맵)이 간접광 대부분을 맡으므로 반구광·주변광은 낮게 받친다
     this.hemi = new THREE.HemisphereLight(new THREE.Color(p.skyTop), new THREE.Color(p.water), 0.85)
     this.scene.add(this.hemi)
     this.sun = new THREE.DirectionalLight(0xffffff, 1.45)
     this.sun.position.set(-30, 22, -8)
     // 그림자는 보트 주변만 — 로어와 배가 수면에 그림자를 떨어뜨려 물 위에 떠 있어 보인다.
     this.sun.castShadow = true
-    this.sun.shadow.mapSize.set(1024, 1024)
+    this.sun.shadow.mapSize.set(2048, 2048)
     this.sun.shadow.camera.near = 1
-    this.sun.shadow.camera.far = 110
-    this.sun.shadow.camera.left = -26
-    this.sun.shadow.camera.right = 26
-    this.sun.shadow.camera.top = 26
-    this.sun.shadow.camera.bottom = -26
-    this.sun.shadow.bias = -0.0006
-    this.sun.shadow.normalBias = 0.03
+    this.sun.shadow.camera.far = 120
+    this.sun.shadow.camera.left = -30
+    this.sun.shadow.camera.right = 30
+    this.sun.shadow.camera.top = 30
+    this.sun.shadow.camera.bottom = -30
+    this.sun.shadow.bias = -0.0004
+    this.sun.shadow.normalBias = 0.035
+    // PCF 보겔 디스크 샘플링 반경 — 그림자 가장자리가 부드럽게 번진다
+    this.sun.shadow.radius = 3
     this.scene.add(this.sun, this.sun.target)
     this.ambient = new THREE.AmbientLight(0xffffff, 0.25)
     this.scene.add(this.ambient)
+    // 반사 카메라는 REFLECT_LAYER만 보므로 조명도 그 레이어에 있어야 반사가 검게 나오지 않는다
+    markReflective(this.sun)
+    markReflective(this.hemi)
+    markReflective(this.ambient)
 
     // ── 물 ──────────────────────────────────────────────────
     this.water = new Water(p.water, p.waterDeep)
     this.scene.add(this.water.mesh)
 
     // ── 강둑과 들판 ─────────────────────────────────────────
-    // 정점색은 배율이다 — 잔디의 얼룩과 물가 진흙은 지오메트리에 굽고, 날씨에 따른 땅색은 재질이 맡는다
+    // 잔디 텍스처 + 노멀맵 위에 정점색 얼룩을 곱한다. 날씨에 따른 땅색은 재질 색(tint)이 맡는다.
+    const grass = grassMaps()
     this.bankMaterial = new THREE.MeshStandardMaterial({
-      color: p.land, flatShading: true, roughness: 0.9, side: THREE.DoubleSide, vertexColors: true,
+      color: '#ffffff', flatShading: false, roughness: 0.94, side: THREE.DoubleSide, vertexColors: true,
+      map: grass.map, normalMap: grass.normalMap, normalScale: new THREE.Vector2(0.8, 0.8),
     })
     this.hillMaterial = new THREE.MeshStandardMaterial({
       color: p.land, flatShading: false, roughness: 1, fog: true,
     })
+    this.shoreTexture = foamTexture().clone()
+    this.shoreTexture.needsUpdate = true
+    this.shoreMaterial = new THREE.MeshBasicMaterial({
+      map: this.shoreTexture, transparent: true, opacity: 0.32, depthWrite: false, color: '#dff4ff',
+    })
+    // 띠의 안쪽(물 쪽) 가장자리는 부드럽게 사라진다
+    this.shoreMaterial.onBeforeCompile = shader => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        '#include <map_fragment>\n diffuseColor.a *= smoothstep(0.0, 0.5, vMapUv.y) * (1.0 - smoothstep(0.75, 1.0, vMapUv.y));',
+      )
+    }
     const maxStation = course.durationSec * 8 + 1_000
     for (const side of [1, -1] as const) {
       const bank = createBankRibbon(this.path, side, maxStation, this.bankMaterial)
       bank.name = 'scenery:bank'
       const meadow = createMeadowRibbon(this.path, side, maxStation, this.bankMaterial)
       meadow.name = 'scenery:meadow'
-      this.courseRoot.add(bank, meadow)
+      const shore = createShoreRibbon(this.path, side, maxStation, this.shoreMaterial)
+      shore.name = 'scenery:shore'
+      this.courseRoot.add(bank, meadow, shore)
     }
 
-    for (const [green, fall] of LEAF_PALETTES) {
+    LEAF_PALETTES.forEach(([green, fall], index) => {
+      const cardKind: LeafCardKind = index === 4 ? 'needle' : index === 5 ? 'willow' : 'broad'
       this.foliage.push({
         // 평면 음영이면 도형 티가 그대로 난다. 흐트러진 정점 위에 부드러운 음영을 얹어야 잎 덩어리로 읽힌다.
         material: new THREE.MeshStandardMaterial({ color: green, flatShading: false, roughness: 0.95, vertexColors: true }),
+        // 겉면의 잎사귀 카드: 알파 컷아웃이라 그림자도 잎 모양으로 얼룩진다
+        cards: new THREE.MeshStandardMaterial({
+          color: green, roughness: 0.9, vertexColors: true, map: leafCardTexture(cardKind),
+          alphaTest: 0.42, side: THREE.DoubleSide,
+        }),
         green: new THREE.Color(green),
         fall: new THREE.Color(fall),
       })
-    }
+    })
 
     // ── 살아 있는 강변 풍경 ────────────────────────────────
     this.buildScenery()
@@ -1560,7 +1707,9 @@ export class World {
     this.buildBoundaryLine()
 
     // vertexColors 재질을 쓰는 지오메트리에 색 속성이 없으면 검게 나온다 — 빠진 곳은 흰색으로 채운다
-    const tinted = new Set<THREE.Material>([this.bankMaterial, ...this.foliage.map(f => f.material)])
+    const tinted = new Set<THREE.Material>([
+      this.bankMaterial, ...this.foliage.map(f => f.material), ...this.foliage.map(f => f.cards),
+    ])
     this.scene.traverse(obj => {
       const mesh = obj as THREE.Mesh
       if (!mesh.isMesh || !tinted.has(mesh.material as THREE.Material)) return
@@ -1572,6 +1721,47 @@ export class World {
     this.weather = new WeatherSystem(weatherSeed, course.durationSec, sections)
     this.scene.add(this.weather.root)
     this.applyWeather(this.weather.state)
+
+    // ── 수면 반사에 비칠 것들 ─────────────────────────────
+    // 큰 것만 — 하늘·강둑·나무·건물·구름·물새. 응원객·소품 잔챙이·입자는 빼서 반사 패스를 가볍게 한다.
+    markReflective(this.sky)
+    markReflective(this.weather.root)
+    markReflective(this.weather.precipitationRoot, false)
+    markReflective(this.cloudPuffs)
+    markReflective(this.landmarkGroup)
+    for (const node of [...this.treeNodes, ...this.farNodes, ...this.ducks]) markReflective(node.obj)
+    for (const node of this.bankProps) {
+      if (['cottage', 'manor', 'boatshed', 'tent', 'jetty', 'lamp', 'flag', 'rowboat'].includes(node.kind ?? '')) {
+        markReflective(node.obj)
+      }
+    }
+    for (const bush of this.bushes) markReflective(bush)
+    markReflective(this.reeds)
+    for (const child of this.courseRoot.children) {
+      if (child.name === 'scenery:bank' || child.name === 'scenery:meadow') markReflective(child)
+    }
+  }
+
+  /**
+   * 하늘을 환경맵으로 굽는다 (날씨가 바뀔 때만). 렌더러가 필요해 View가 프레임마다 부른다.
+   */
+  updateEnvironment(renderer: THREE.WebGLRenderer) {
+    const s = this.weather.state
+    const key = `${s.from}:${s.to}:${s.mix.toFixed(1)}:${s.rainbow.toFixed(1)}`
+    this.environment.update(renderer, this.scene, key)
+  }
+
+  /** 품질 티어에 따라 풀포기 수를 줄인다 (0..1) */
+  setVegetationScale(scale: number) {
+    this.vegetationScale = Math.max(0, Math.min(1, scale))
+  }
+
+  /** 그림자 맵 해상도 변경 — 기존 맵을 버려야 다음 프레임에 새 크기로 만들어진다 */
+  setShadowMapSize(size: number) {
+    if (this.sun.shadow.mapSize.x === size) return
+    this.sun.shadow.mapSize.set(size, size)
+    this.sun.shadow.map?.dispose()
+    this.sun.shadow.map = null
   }
 
   private buildScenery() {
@@ -1580,12 +1770,21 @@ export class World {
     const random = seededRandom(`${this.course.id}:scenery-detail`)
     const painted = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 })
     const paintedSmooth = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: false, roughness: 0.7 })
-    const trunkMaterial = new THREE.MeshStandardMaterial({ color: TRUNK_COLOR, flatShading: false, roughness: 0.95 })
-    const birchMaterial = new THREE.MeshStandardMaterial({ color: BIRCH_COLOR, flatShading: false, roughness: 0.8 })
+    const bark = barkMaps(TRUNK_COLOR)
+    const birch = birchMaps()
+    const trunkMaterial = new THREE.MeshStandardMaterial({
+      color: '#ffffff', flatShading: false, roughness: 0.95, map: bark.map, normalMap: bark.normalMap,
+      normalScale: new THREE.Vector2(1.0, 1.0),
+    })
+    const birchMaterial = new THREE.MeshStandardMaterial({
+      color: '#ffffff', flatShading: false, roughness: 0.8, map: birch.map, normalMap: birch.normalMap,
+      normalScale: new THREE.Vector2(0.5, 0.5),
+    })
 
     // ── 나무 ──────────────────────────────────────────────
     for (const item of layout.trees) {
-      const tree = createTree(item.kind, this.foliage[item.leaf]!.material, trunkMaterial, birchMaterial, item.phase)
+      const foliage = this.foliage[item.leaf]!
+      const tree = createTree(item.kind, foliage.material, trunkMaterial, birchMaterial, item.phase, foliage.cards)
       tree.position.set(0, 0.7, item.z)
       tree.scale.setScalar(item.scale)
       tree.rotation.y = item.phase
@@ -1604,6 +1803,8 @@ export class World {
     const bushGeometry = roughen(new THREE.SphereGeometry(0.75, 10, 7), 0.2, 7)
     bushGeometry.scale(1.25, 0.85, 1.1)
     bakeCanopyShade(bushGeometry, 7, 0.4)
+    // 덤불 겉면의 잎사귀 카드 — 같은 인스턴스 행렬을 쓰는 두 번째 메시
+    const bushCards = bakeCanopyShade(mergePlain(scatterLeafCards(bushGeometry, 16, 0.75, 77)), 9, 0.3)
     for (const leaf of [1, 5]) {
       const bush = new THREE.InstancedMesh(bushGeometry, this.foliage[leaf]!.material, layout.bushes.length)
       bush.castShadow = true
@@ -1611,7 +1812,51 @@ export class World {
       bush.name = 'scenery:bushes'
       this.courseRoot.add(bush)
       this.bushes.push(bush)
+      const cards = new THREE.InstancedMesh(bushCards, this.foliage[leaf]!.cards, layout.bushes.length)
+      cards.castShadow = true
+      cards.frustumCulled = false
+      cards.name = 'scenery:bush-cards'
+      cards.instanceMatrix = bush.instanceMatrix   // 행렬 버퍼를 공유한다 — 한 번만 갱신하면 된다
+      this.courseRoot.add(cards)
     }
+
+    // ── 물가 갈대와 강둑 풀포기 (인스턴스) ─────────────────
+    // 물가선 바로 안쪽에 갈대가 늘어서고, 강둑 잔디 위에 풀포기가 흩어진다. 바람에 흔들린다.
+    const tuftGeometry = createTuftGeometry(1.0, 1.0)
+    this.tuftMaterial = new THREE.MeshStandardMaterial({
+      map: grassTuftTexture(), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.92, color: '#ffffff',
+    })
+    const vegRandom = seededRandom(`${this.course.id}:vegetation`)
+    for (let i = 0; i < REED_COUNT; i++) {
+      const side: Side = i % 2 === 0 ? 1 : -1
+      // 물가선 양쪽 — 절반은 얕은 물에, 절반은 젖은 진흙에 선다
+      const inset = SHORELINE_INSET - 0.45 + vegRandom() * 0.8
+      this.reedLayout.push({
+        baseX: vegRandom() * REED_SPAN,
+        z: side * (BANK_Z - inset),
+        y: shoreHeightAt(inset) - 0.05,
+        scale: 0.9 + vegRandom() * 0.7,
+        phase: vegRandom() * Math.PI * 2,
+      })
+    }
+    for (let i = 0; i < TUFT_COUNT; i++) {
+      const side: Side = i % 2 === 0 ? 1 : -1
+      this.tuftLayout.push({
+        baseX: vegRandom() * TUFT_SPAN,
+        z: side * (BANK_Z + 0.4 + Math.pow(vegRandom(), 1.6) * 9),
+        y: BANK_TOP_Y - 0.03,
+        scale: 0.45 + vegRandom() * 0.6,
+        phase: vegRandom() * Math.PI * 2,
+      })
+    }
+    this.reeds = new THREE.InstancedMesh(tuftGeometry, this.tuftMaterial, REED_COUNT)
+    this.reeds.castShadow = true
+    this.reeds.frustumCulled = false
+    this.reeds.name = 'scenery:reeds'
+    this.tufts = new THREE.InstancedMesh(tuftGeometry, this.tuftMaterial, TUFT_COUNT)
+    this.tufts.frustumCulled = false
+    this.tufts.name = 'scenery:tufts'
+    this.courseRoot.add(this.reeds, this.tufts)
 
     // ── 응원객 ────────────────────────────────────────────
     const spectatorSpan = Math.ceil(SPECTATOR_COUNT / 2) * 30
@@ -1710,25 +1955,46 @@ export class World {
     }
 
     // ── 구름 ──────────────────────────────────────────────
-    // 조명을 받는 재질이라 윗면은 희고 밑면은 하늘·물빛으로 어두워져 덩어리로 읽힌다. 자체발광으로 너무 어둡지 않게 받친다.
-    this.cloudMaterial = new THREE.MeshStandardMaterial({
-      color: '#f6fbff', emissive: '#8a9db0', transparent: true, opacity: 0.9, depthWrite: false, roughness: 1,
+    // 뭉게구름은 부드러운 알파 조각을 카메라를 향하는 빌보드로 겹친다 — 딱딱한 구 덩어리보다 훨씬 구름답다.
+    // 조각 밝기는 인스턴스 색으로: 윗조각은 희고 아랫조각은 그늘져 부피가 읽힌다.
+    this.cloudMaterial = new THREE.MeshBasicMaterial({
+      map: cloudPuffTexture(), transparent: true, opacity: 0.9, depthWrite: false, color: '#f6fbff',
     })
-    const cloudPuffGeometry = new THREE.SphereGeometry(0.68, 14, 10)
+    this.cloudMaterial.onBeforeCompile = shader => {
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        /* glsl */`
+          vec4 mvCenter = modelViewMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          float puffScale = length(vec3(instanceMatrix[0].x, instanceMatrix[0].y, instanceMatrix[0].z));
+          vec4 mvPosition = mvCenter + vec4(transformed.xy * puffScale, 0.0, 0.0);
+          gl_Position = projectionMatrix * mvPosition;
+        `,
+      )
+    }
     const cloudSpan = CLOUD_COUNT * 70
+    const puffCount = layout.clouds.length * CLOUD_PARTS.length
+    this.cloudPuffs = new THREE.InstancedMesh(new THREE.PlaneGeometry(2, 2), this.cloudMaterial, puffCount)
+    this.cloudPuffs.frustumCulled = false
+    this.cloudPuffs.name = 'scenery:clouds'
+    this.cloudPuffs.renderOrder = -1
+    this.scene.add(this.cloudPuffs)
     layout.clouds.forEach((item, index) => {
-      const cloud = createCloud(cloudPuffGeometry, this.cloudMaterial, item.phase)
+      const anchor = new THREE.Object3D()
       const y = 28 + (index % 4) * 4.2 + item.scale * 1.5
-      cloud.position.set(0, y, item.z)
-      cloud.scale.setScalar(item.scale)
-      cloud.rotation.y = Math.sin(item.phase) * 0.12
-      cloud.name = 'scenery:cloud'
-      this.scene.add(cloud)
+      anchor.position.set(0, y, item.z)
+      anchor.scale.setScalar(item.scale)
       this.clouds.push({
-        obj: cloud, baseX: item.baseX, baseY: y, baseZ: item.z,
+        obj: anchor, baseX: item.baseX, baseY: y, baseZ: item.z,
         baseYaw: 0, span: cloudSpan, phase: item.phase,
       })
+      for (let k = 0; k < CLOUD_PARTS.length; k++) {
+        const part = CLOUD_PARTS[k]!
+        // 밑조각은 그늘: 조각 높이에 따라 밝기를 굽는다
+        const shade = 0.78 + THREE.MathUtils.clamp((part[1] + 0.14) / 0.44, 0, 1) * 0.22
+        this.cloudPuffs.setColorAt(index * CLOUD_PARTS.length + k, new THREE.Color(shade, shade, shade * 1.02))
+      }
     })
+    if (this.cloudPuffs.instanceColor) this.cloudPuffs.instanceColor.needsUpdate = true
 
     // ── 하늘: 열기구·비행선·새떼·달 ──────────────────────
     for (const item of layout.sky) {
@@ -1879,16 +2145,25 @@ export class World {
     this.hemi.color.copy(appearance.skyTop)
     this.hemi.groundColor.copy(appearance.water)
     this.ambient.intensity = appearance.ambientIntensity
+    this.skyUniforms.uCloudShade.value = 0.72 - weather.cloudiness * 0.22
     this.cloudMaterial.color.copy(appearance.cloud)
-    this.cloudMaterial.emissive.copy(appearance.cloud).multiplyScalar(0.5)
     this.cloudMaterial.opacity = appearance.cloudOpacity
-    this.bankMaterial.color.copy(appearance.land)
+    // 잔디 텍스처에 곱하는 색조 — 날씨 땅색을 밝기 1 근처로 옮겨 텍스처 색이 살아 있게 한다
+    const land = appearance.land
+    this.bankMaterial.color.setRGB(0.55 + land.r * 1.15, 0.55 + land.g * 1.15, 0.55 + land.b * 1.15)
     // 먼 언덕은 하늘색이 섞여 멀어 보인다 (대기 원근)
     this.hillMaterial.color.copy(appearance.land).lerp(appearance.skyBottom, 0.5)
     for (const leaf of this.foliage) {
       leaf.material.color.copy(leaf.green).lerp(leaf.fall, appearance.autumn)
         .multiplyScalar(appearance.foliageLight)
+      // 카드는 빛이 통과하는 겉잎이라 덩어리보다 조금 밝다
+      leaf.cards.color.copy(leaf.material.color).multiplyScalar(1.12)
     }
+    // 갈대·풀포기는 텍스처 자체가 초록이라 밝기와 계절만 얹는다
+    this.tuftMaterial.color.setRGB(1, 1, 1)
+      .lerp(new THREE.Color('#e0c060'), appearance.autumn * 0.6)
+      .multiplyScalar(0.55 + appearance.foliageLight * 0.5)
+    this.shoreMaterial.opacity = 0.22 + b.wind * 0.18 + b.rain * 0.1
     // 달은 황금빛 오후와 눈 오는 날에 은은하게 보인다
     this.moonMaterial.opacity = b.sun * 0.7 + b.snow * 0.4 + b.autumn * 0.22 + b.clear * 0.12 + b.wind * 0.2
     this.water.setPalette(appearance.water, appearance.waterDeep)
@@ -1899,7 +2174,12 @@ export class World {
 
   private buildLandmarks() {
     const p = this.course.venue.palette
-    const mat = new THREE.MeshStandardMaterial({ color: p.landmark, flatShading: true, roughness: 0.8 })
+    // 석조 랜드마크(다리·성·탑)는 돌담 텍스처 — 색은 장소 팔레트가 곱해진다
+    const stone = stoneMaps('#d6d1c6')
+    const mat = new THREE.MeshStandardMaterial({
+      color: p.landmark, flatShading: false, roughness: 0.85,
+      map: stone.map, normalMap: stone.normalMap, normalScale: new THREE.Vector2(0.6, 0.6),
+    })
     const painted = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.82 })
     const accent = new THREE.MeshStandardMaterial({ color: '#ff9f43', flatShading: true })
     const gateMat = new THREE.MeshStandardMaterial({ color: '#3b2f26', flatShading: true, roughness: 0.9 })
@@ -2450,7 +2730,7 @@ export class World {
     }
 
     // 구름은 먼 배경답게 지상보다 느리게 흘러 원근감을 만든다
-    for (const node of this.clouds) {
+    this.clouds.forEach((node, index) => {
       node.obj.position.x = wrappedLoopX(
         node.baseX,
         distance * 0.12 - animationTimeSec * (0.5 + wind * 2.1),
@@ -2460,7 +2740,50 @@ export class World {
       node.obj.position.y = node.baseY - weather.cloudiness * 1.8
         + Math.sin(animationTimeSec * 0.16 + node.phase) * 0.32
       node.obj.position.z = node.baseZ
+      // 조각 빌보드 행렬: 위치는 덩어리 기준 오프셋, 크기는 조각 크기 × 덩어리 크기
+      const mirror = Math.sin(node.phase) < 0 ? -1 : 1
+      const stretch = 0.92 + Math.abs(Math.cos(node.phase)) * 0.22
+      const cloudScale = node.obj.scale.x * 1.7
+      for (let k = 0; k < CLOUD_PARTS.length; k++) {
+        const [px, py, pz, ps] = CLOUD_PARTS[k]!
+        _position.set(
+          node.obj.position.x + px * mirror * stretch * cloudScale,
+          node.obj.position.y + py * cloudScale + Math.sin(animationTimeSec * 0.3 + k) * 0.15,
+          node.obj.position.z + pz * cloudScale,
+        )
+        const s = ps * cloudScale * 1.35
+        _scale.set(s, s * 0.82, s)
+        _matrix.compose(_position, _quaternion.identity(), _scale)
+        this.cloudPuffs.setMatrixAt(index * CLOUD_PARTS.length + k, _matrix)
+      }
+    })
+    this.cloudPuffs.instanceMatrix.needsUpdate = true
+
+    // 갈대는 물가선을 따라, 풀포기는 강둑 위에 되풀이된다. 바람에 기운다.
+    const sway = 0.04 + wind * 0.12
+    const placeTufts = (mesh: THREE.InstancedMesh, layout: TuftPlacement[], span: number, minX: number) => {
+      const visible = Math.round(layout.length * this.vegetationScale)
+      for (let i = 0; i < layout.length; i++) {
+        const item = layout[i]!
+        const along = wrappedLoopX(item.baseX, distance, span, minX)
+        const point = offsetPathPoint(this.path, distance + along, item.z)
+        _position.set(point.x, i < visible ? item.y : -50, point.z)
+        _euler.set(
+          Math.sin(animationTimeSec * 1.7 + item.phase) * sway,
+          item.phase - point.heading,
+          Math.sin(animationTimeSec * 1.3 + item.phase * 1.7) * sway,
+        )
+        _quaternion.setFromEuler(_euler)
+        _scale.set(item.scale, item.scale * 1.15, item.scale)
+        _matrix.compose(_position, _quaternion, _scale)
+        mesh.setMatrixAt(i, _matrix)
+      }
+      mesh.instanceMatrix.needsUpdate = true
     }
+    placeTufts(this.reeds, this.reedLayout, REED_SPAN, -70)
+    placeTufts(this.tufts, this.tuftLayout, TUFT_SPAN, -70)
+    // 물가의 얕은 물이 살랑인다
+    this.shoreTexture.offset.set(animationTimeSec * 0.012, Math.sin(animationTimeSec * 0.8) * 0.04)
 
     // 열기구와 비행선은 바람을 타고 아주 천천히 떠간다. 흐리면 낮게 가라앉는다.
     for (const node of this.skyObjects) {
@@ -2551,6 +2874,8 @@ export class World {
   }
 
   dispose() {
+    this.environment.dispose()
+    this.scene.environment = null
     this.scene.traverse(o => {
       const m = o as THREE.Mesh
       m.geometry?.dispose?.()

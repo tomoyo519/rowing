@@ -1,5 +1,13 @@
 import * as THREE from 'three'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js'
 import { World, type AmbientPresence } from './world'
+import { markReflective, PlanarReflection } from './reflection'
+import { initialQuality, QUALITY_PRESETS, QualityGovernor, type QualitySettings, type QualityTier } from './quality'
+import { applyAnisotropy } from './textures'
 import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST, type RigBody } from './rig'
 import { projectedDistance } from '../game/courses'
 import { splitToSpeed } from '../game/physics'
@@ -103,26 +111,40 @@ export class View {
   private turnStrength = 0
   private camIndex = 0
   private path: CoursePath
+  /** 수면 평면 반사 — 메인 렌더 전에 장면을 한 번 더 그린다 */
+  private reflection: PlanarReflection
+  /** 프레임 시간을 보고 품질 티어를 내린다 */
+  private governor: QualityGovernor
+  private quality: QualitySettings
+  /** 블룸·SMAA 후처리 체인. low 티어에서는 없고 렌더러가 화면에 직접 그린다 */
+  private composer: EffectComposer | null = null
+  private composerTarget: THREE.WebGLRenderTarget | null = null
 
   /** @param body 플레이어(와 지난 기록의 고스트) 아바타 체형 */
   constructor(canvas: HTMLCanvasElement, session: Session, body: RigBody = 'male') {
     this.renderer = new THREE.WebGLRenderer({
       canvas, antialias: true, powerPreference: 'high-performance',
     })
-    // 고해상도 iPad에서도 투명 날씨 효과가 프레임을 과도하게 채우지 않게 제한한다.
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.05
-    // 보트·로어·나무가 수면과 강둑에 그림자를 떨어뜨린다. 그림자 카메라는 보트 주변 ±26m만 덮는다.
+    // 보트·로어·나무가 수면과 강둑에 그림자를 떨어뜨린다. 그림자 카메라는 보트 주변 ±30m만 덮는다.
     this.renderer.shadowMap.enabled = true
-    // 부드러운 그림자 가장자리 — 딱딱한 계단 그림자는 장난감처럼 보인다
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    // 부드러운 그림자 가장자리 — 딱딱한 계단 그림자는 장난감처럼 보인다 (반경은 sun.shadow.radius)
+    this.renderer.shadowMap.type = THREE.PCFShadowMap
+    // 드로우콜·삼각형 통계를 반사·메인·후처리 패스를 합쳐 프레임 단위로 센다 (render()에서 reset)
+    this.renderer.info.autoReset = false
+    // 반사 패스와 메인 패스가 같은 그림자 맵을 쓴다 — 프레임마다 한 번만 굽는다 (render()에서 needsUpdate)
+    this.renderer.shadowMap.autoUpdate = false
 
     this.camera = new THREE.PerspectiveCamera(52, 1, 0.1, 500)
 
     this.world = new World(session.course, session.weatherSeed)
     this.world.attachWeatherToCamera(this.camera)
+    this.reflection = new PlanarReflection(this.renderer)
+    const initial = initialQuality()
+    this.governor = new QualityGovernor(initial.tier, initial.locked, tier => this.applyQuality(QUALITY_PRESETS[tier]))
+    this.quality = this.governor.settings
     this.total = projectedDistance(session.course, session.baseSplit)
     this.path = createCoursePath(session.course.id)
 
@@ -146,13 +168,59 @@ export class View {
       this.ghostStroke.phase = 0.8
     }
 
+    // 보트들은 수면에 비친다 — 강 장면이 진짜로 보이는 가장 큰 단서
+    markReflective(this.player.group)
+    markReflective(this.pace.group)
+    if (this.ghost) markReflective(this.ghost.group)
+    applyAnisotropy(this.renderer)
+    this.applyQuality(this.quality)
+  }
+
+  get qualityTier(): QualityTier { return this.quality.tier }
+
+  /** 품질 티어를 적용한다 — 픽셀 비율, 그림자 해상도, 반사 해상도, 풀포기 밀도, 후처리 체인 */
+  private applyQuality(settings: QualitySettings) {
+    this.quality = settings
+    // 고해상도 iPad에서도 투명 날씨 효과가 프레임을 과도하게 채우지 않게 제한한다.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, settings.pixelRatioCap))
+    this.world.setShadowMapSize(settings.shadowMapSize)
+    this.world.setVegetationScale(settings.vegetation)
+    this.reflection.enabled = settings.reflectionScale > 0
+    this.reflection.scale = Math.max(0.1, settings.reflectionScale)
+    this.world.water.setReflection(this.reflection.enabled ? this.reflection : null)
+    this.buildComposer(settings)
     this.resize()
+  }
+
+  /**
+   * 후처리 체인: 장면(HDR) → 블룸 → 톤매핑·sRGB 출력 → SMAA.
+   * 블룸은 문턱이 높아 햇빛 반짝임과 태양 주변만 번진다. SMAA가 꺼진 티어는 렌더 타깃 MSAA로 대신한다.
+   */
+  private buildComposer(settings: QualitySettings) {
+    this.composer?.dispose()
+    this.composerTarget?.dispose()
+    this.composer = null
+    this.composerTarget = null
+    if (!settings.bloom && !settings.smaa) return
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2())
+    this.composerTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
+      type: THREE.HalfFloatType, samples: settings.smaa ? 0 : 4,
+    })
+    const composer = new EffectComposer(this.renderer, this.composerTarget)
+    composer.addPass(new RenderPass(this.world.scene, this.camera))
+    // 문턱 1.0: 톤매핑 전 HDR에서 1을 넘는 곳(해·햇빛 반짝임)만 번진다. 더 낮추면 해를 마주 볼 때 화면이 날아간다
+    if (settings.bloom) composer.addPass(new UnrealBloomPass(size.clone(), 0.22, 0.45, 1.0))
+    composer.addPass(new OutputPass())
+    if (settings.smaa) composer.addPass(new SMAAPass())
+    this.composer = composer
   }
 
   resize() {
     const c = this.renderer.domElement
     const w = c.clientWidth || 1, h = c.clientHeight || 1
     this.renderer.setSize(w, h, false)
+    this.composer?.setSize(w, h)
+    this.reflection.resize(this.renderer)
     this.camera.aspect = w / h
     const cam = CAMERAS[this.camIndex]!
     // 세로 화면에서는 화각을 넓혀 보트가 잘리지 않게 한다
@@ -259,8 +327,18 @@ export class View {
     )
     // lookAt 이후 카메라 로컬 전방축을 기준으로 뱅킹해야 곡선에서 화면이 기운다.
     this.camera.rotateZ(turn.cameraBank)
+    this.camera.updateMatrixWorld()
 
-    this.renderer.render(this.world.scene, this.camera)
+    // ── 렌더 ────────────────────────────────────────────────
+    this.renderer.info.reset()
+    this.governor.update(dt)
+    // 하늘 환경맵은 날씨가 바뀔 때만 다시 굽는다
+    this.world.updateEnvironment(this.renderer)
+    // 그림자 맵은 프레임당 한 번 — 먼저 오는 패스(반사 또는 메인)가 굽고 나머지는 재사용한다
+    this.renderer.shadowMap.needsUpdate = true
+    this.reflection.render(this.renderer, this.world.scene, this.camera)
+    if (this.composer) this.composer.render(dt)
+    else this.renderer.render(this.world.scene, this.camera)
   }
 
   /** 다음 카메라 프리셋으로. 이름을 돌려준다. */
@@ -281,6 +359,9 @@ export class View {
   }
 
   dispose() {
+    this.composer?.dispose()
+    this.composerTarget?.dispose()
+    this.reflection.dispose()
     this.world.dispose()
     this.renderer.dispose()
   }
