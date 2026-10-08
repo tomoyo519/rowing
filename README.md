@@ -1,5 +1,7 @@
 # makeRowing
 
+사이트 주소: https://make-rowing.sunnyseed1.chatgpt.site
+
 FTMS 로잉머신에 연결해서 돌아가는 3D 로잉 게임. iPad 1대 + 로잉머신 1대 구성.
 
 EXR과 비슷한 컨셉 — 실제 노 젓는 속도에 맞춰 3D 아바타가 젓고, 코스를 따라 전진합니다.
