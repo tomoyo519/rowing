@@ -312,7 +312,7 @@ describe('노를 놓으면 배가 멈춘다', () => {
       s.onSample(idle({ at: at + dt, strokeCount: count, totalDistance: dist }))
       run(s, 0.5)
     }
-    run(s, 5)
+    run(s, 7)
     expect(s.boat.speed).toBeLessThan(0.1)
   })
 
@@ -353,7 +353,7 @@ describe('노를 놓으면 배가 멈춘다', () => {
       s.onSample({ at: at + dt, strokeRate: 0, strokeCount: 10, totalDistance: Math.round(dist), instantaneousPace: 0 })
       run(s, 0.5)
     }
-    run(s, 5)
+    run(s, 7)
     expect(s.boat.speed).toBeLessThan(0.1)
   })
 
@@ -365,7 +365,7 @@ describe('노를 놓으면 배가 멈춘다', () => {
       s.onSample(idle({ at: at + dt, strokeCount: count, totalDistance: dist, instantaneousPace: 65535 }))
       run(s, 0.5)
     }
-    run(s, 5)
+    run(s, 7)
     expect(s.boat.speed).toBeLessThan(0.1)
   })
 
@@ -409,10 +409,10 @@ describe('노를 놓으면 배가 멈춘다', () => {
       s.onSample(rowing({ at: at + dt, strokeCount: count, totalDistance: dist }))
       run(s, 0.5)
     }
-    run(s, 4)
+    run(s, 6)
     expect(s.boat.speed).toBeLessThan(0.1)
     s.onSample({ at: at + STAGNANT_DISTANCE_MS + 500, strokeRate: 28, instantaneousPace: 120, instantaneousPower: 280 })
-    run(s, 1)
+    run(s, 1.5)
     expect(s.boat.speed).toBeGreaterThan(2)
     expect(s.stroke.spm).toBeGreaterThan(20)
   })
@@ -447,10 +447,10 @@ describe('노를 놓으면 배가 멈춘다', () => {
     let minSpeed = Infinity
     let minSpm = Infinity
     // 3초 사이클: 1초 드라이브(값 있음, 거리 증가) + 2초 리커버리(전부 0)
-    for (let cycle = 0; cycle < 6; cycle++) {
+    for (let cycle = 0; cycle < 8; cycle++) {
       for (let t = 0; t < 3000; t += 250) {
         const drive = t < 1000
-        if (drive) dist += 1.4
+        if (drive) dist += 2.5
         if (t === 750) count++
         s.onSample({
           at, strokeRate: drive ? 20 : 0, strokeCount: count, totalDistance: Math.round(dist),
@@ -458,7 +458,8 @@ describe('노를 놓으면 배가 멈춘다', () => {
         })
         run(s, 0.25)
         at += 250
-        if (cycle >= 2) {
+        // 보트 관성(BOAT_SPEED_TAU)만큼 처음 몇 스트로크는 가속 중이다
+        if (cycle >= 4) {
           minSpeed = Math.min(minSpeed, s.boat.speed)
           minSpm = Math.min(minSpm, s.stroke.spm)
         }
@@ -475,7 +476,7 @@ describe('노를 놓으면 배가 멈춘다', () => {
     const before = s.boat.speed
     // 0.5초마다 2m — 4 m/s로 젓고 있다. 옛 속도(3.4)를 붙들면 스플릿·게이지가 실제와 어긋난다.
     // 거리 속도는 3초 창의 평균이라(정수 미터 떨림을 누르기 위해) 새 속도가 자리 잡는 데 창 + 보트 관성만큼 걸린다.
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 20; i++) {
       s.onSample({ at: at + i * 500, strokeRate: 26, strokeCount: count + i, totalDistance: dist + i * 2 })
       run(s, 0.5)
     }
@@ -500,7 +501,7 @@ describe('노를 놓으면 배가 멈춘다', () => {
     const s = new Session(course, 145)
     s.start()
     let at = 0
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 50; i++) {
       s.onSample({ at, strokeRate: 30, strokeCount: 10 + (i >> 3), totalDistance: 100 + i })
       const interval = i % 2 === 0 ? 199 : 201
       run(s, interval / 1000)

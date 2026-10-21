@@ -87,6 +87,8 @@ const PACE_CHECK_MIN_SPEED = 1.0
  * 거리는 더 늘어 페이스 보트가 뒤로 처진다. 적분끼리 비교하므로 가속·감속 중에도 치우치지 않는다.
  */
 export const PACE_CALIBRATION_WINDOW_MS = 20_000
+/** 보정 배율이 새 값으로 옮겨 가는 시간 상수 (ms) */
+const PACE_CALIBRATION_SMOOTH_MS = 8_000
 /** 창 안에서 이만큼(m, ms)은 움직여야 배율을 새로 잡는다 */
 const PACE_CALIBRATION_MIN_METERS = 30
 const PACE_CALIBRATION_MIN_MS = 8_000
@@ -336,8 +338,11 @@ export class Session {
     const moved = d - first.d
     const predicted = this.reportedIntegral - first.r
     if (s.at - first.at < PACE_CALIBRATION_MIN_MS || moved < PACE_CALIBRATION_MIN_METERS || predicted <= 0) return
-    const ratio = moved / predicted
-    this.paceScale = Math.min(PACE_CALIBRATION_MAX, Math.max(1 / PACE_CALIBRATION_MAX, ratio))
+    // 창 끝점이 스트로크의 어느 위상에 걸리느냐에 따라 비율이 스트로크마다 ±10% 출렁인다 — 그대로 쓰면
+    // 그 출렁임이 곧 배의 울컥임이 된다. 천천히 따라가게 한다.
+    const ratio = Math.min(PACE_CALIBRATION_MAX, Math.max(1 / PACE_CALIBRATION_MAX, moved / predicted))
+    const dt = prevAt === null ? 0 : Math.max(0, s.at - prevAt)
+    this.paceScale += (ratio - this.paceScale) * (1 - Math.exp(-dt / PACE_CALIBRATION_SMOOTH_MS))
   }
 
   /**

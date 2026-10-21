@@ -103,4 +103,69 @@ describe('BoatTracker', () => {
     b.update(0.1)
     expect(b.distance).toBeCloseTo(500, 0)
   })
+
+  /** 프레임마다 화면 속도(거리 변화 / dt)를 재서 워밍업 뒤의 최소·최대를 돌려준다 */
+  function frameSpeeds(
+    seconds: number, warmup: number,
+    step: (t: number, b: BoatTracker) => void,
+  ) {
+    const b = new BoatTracker()
+    const dt = 1 / 60
+    let min = Infinity, max = 0, sum = 0, n = 0
+    for (let i = 0; i < Math.round(seconds / dt); i++) {
+      const t = i * dt
+      step(t, b)
+      const before = b.distance
+      b.update(dt)
+      const v = (b.distance - before) / dt
+      if (t >= warmup) { min = Math.min(min, v); max = Math.max(max, v); sum += v; n++ }
+    }
+    return { min, max, mean: sum / n }
+  }
+
+  it('스트로크마다 한 번만 거리를 올리는 콘솔에서도 리커버리 때 배가 서지 않는다', () => {
+    // 22spm(2.73초)마다 거리가 9m씩 뛰고, 그 사이 패킷은 같은 거리와 붙든 속도(3.3 m/s)를 0.5초마다 보낸다.
+    // 예전엔 패킷마다 외삽 기준을 새로 잡아 목표 지점이 제자리에 묶였고, 배가 리커버리마다 끌려 섰다.
+    const period = 2.73
+    let nextPacket = 0
+    const r = frameSpeeds(30, 12, (t, b) => {
+      if (t < nextPacket) return
+      nextPacket += 0.5
+      b.onSample(1000 + Math.floor(t / period) * 9, 9 / period)
+    })
+    expect(r.min).toBeGreaterThan(r.mean * 0.6)
+    expect(r.max).toBeLessThan(r.mean * 1.6)
+  })
+
+  it('순간 속도가 드라이브·리커버리로 크게 출렁여도 화면 속도는 물 흐르듯 이어진다', () => {
+    // 드라이브 1초 4.6 m/s, 리커버리 1.5초 2.6 m/s — 플라이휠 속도를 그대로 보내는 콘솔. 평균 3.4 m/s.
+    let nextPacket = 0
+    let dist = 0
+    let lastT = 0
+    const speedAt = (t: number) => (t % 2.5 < 1 ? 4.6 : 2.6)
+    const r = frameSpeeds(30, 12, (t, b) => {
+      dist += speedAt(t) * (t - lastT)
+      lastT = t
+      if (t < nextPacket) return
+      nextPacket += 0.5
+      b.onSample(Math.floor(dist), speedAt(t))
+    })
+    expect(r.mean).toBeCloseTo(3.4, 0)
+    // 실제 배의 스트로크 출렁임 정도(±20%)는 남기되, 멈칫하지는 않는다
+    expect(r.min).toBeGreaterThan(r.mean * 0.75)
+    expect(r.max).toBeLessThan(r.mean * 1.3)
+  })
+
+  it('앞서 나간 만큼 기다려 맞추되 뒤로 가지는 않는다', () => {
+    const b = new BoatTracker()
+    b.onSample(0, 4.0)
+    for (let i = 0; i < 120; i++) b.update(1 / 60)
+    b.onSample(0, 0)             // 기기는 거리 그대로, 속도 0 — 화면이 앞서 있다
+    let prev = b.distance
+    for (let i = 0; i < 600; i++) {
+      b.update(1 / 60)
+      expect(b.distance).toBeGreaterThanOrEqual(prev)
+      prev = b.distance
+    }
+  })
 })
