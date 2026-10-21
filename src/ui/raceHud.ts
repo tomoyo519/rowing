@@ -44,6 +44,7 @@ export class RaceHud {
   private text = new Map<string, string>()
   private cls = new Map<string, string>()
   private dispSplit = Infinity
+  private dispSpeed = 0
   private dispPow = 0
   private splitText = '--:--'
   private lastGaugeState: PaceGaugeState | null = null
@@ -84,6 +85,7 @@ export class RaceHud {
     this.text.clear()
     this.cls.clear()
     this.dispSplit = Infinity
+    this.dispSpeed = 0
     this.dispPow = 0
     this.splitText = '--:--'
     this.lastGaugeState = null
@@ -157,8 +159,11 @@ export class RaceHud {
     if (hr > 0) $('stat-hr').style.setProperty('--beat', `${(60 / hr).toFixed(2)}s`)
 
     // ── 현재 페이스 (표시용 평활) ─────────────────────────
-    const rawSplit = isFinite(m.split) && m.split > 0 && m.split < 600 ? m.split : Infinity
-    this.dispSplit = isFinite(rawSplit) ? ema(this.dispSplit, rawSplit, dt, 0.8) : Infinity
+    // 속도로 평활한 뒤 스플릿으로 바꾼다. 스플릿(초/500m)을 직접 평균하면 스트로크 안의 빠른·느린 순간이
+    // 느린 쪽으로 치우쳐서(조화평균) 화면은 목표대로인데 실제로는 더 빨라 페이스 보트가 뒤로 처진다.
+    const live = isFinite(m.split) && m.split > 0 && m.split < 600
+    this.dispSpeed = live ? (this.dispSpeed > 0 ? ema(this.dispSpeed, m.speed, dt, 0.8) : m.speed) : 0
+    this.dispSplit = this.dispSpeed > 0 ? 500 / this.dispSpeed : Infinity
     const candidate = formatSplitShort(this.dispSplit)
     if (candidate !== this.splitText) {
       // 정수 초 경계를 0.4초 넘게 지나야 글자가 바뀐다 — 경계에서 2:19↔2:20이 떨리지 않는다

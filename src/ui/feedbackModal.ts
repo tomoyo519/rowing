@@ -46,7 +46,7 @@ export class FeedbackModal {
       const unit = document.createElement('i')
       unit.textContent = 's'
       const word = document.createElement('span')
-      word.textContent = Math.abs(fb.delta) < 1.5 ? '목표 페이스 그대로' : fb.delta > 0 ? '목표보다 느림' : '목표보다 빠름'
+      word.textContent = Math.abs(fb.delta) < 1.5 ? '목표 페이스 딱!' : fb.delta > 0 ? '목표까지 이만큼' : '목표보다 빨라요'
       hero.append(value, unit, word)
     }
 

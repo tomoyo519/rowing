@@ -630,12 +630,22 @@ $('sim-intensity').addEventListener('input', e => {
 
 // ── 렌더 루프 ───────────────────────────────────────────────
 let last = performance.now()
+/** 세션 시계를 한 번에 진행하는 최대 폭 (초) — 프레임이 밀렸을 때 이 단위로 나눠 진행한다 */
+const SESSION_STEP = 0.1
+/** 프레임 사이가 이보다 길면(앱 전환 등) 그 너머는 세지 않는다 */
+const SESSION_MAX_GAP = 1
+
 function frame(now: number) {
-  const dt = Math.min(0.1, (now - last) / 1000)
+  const realDt = Math.min(SESSION_MAX_GAP, Math.max(0, (now - last) / 1000))
+  // 애니메이션은 튀지 않게 0.1초로 자른다
+  const dt = Math.min(0.1, realDt)
   last = now
 
   if (session && view && $('screen-race').classList.contains('active')) {
-    session.update(dt)
+    // 세션 시계·페이스 보트는 실제 흐른 시간만큼 간다. 내 거리는 기기가 실제 시간으로 쌓으므로,
+    // 3D가 무거워 프레임이 0.1초를 넘길 때마다 잘라 버리면 시계와 페이스 보트만 늦게 가서
+    // 목표 페이스로 저어도 페이스 보트가 뒤로 처진다.
+    for (let left = realDt; left > 1e-6; left -= SESSION_STEP) session.update(Math.min(SESSION_STEP, left))
     const strokeCue = metronome.update(
       session.stroke.phase,
       session.stroke.spm,
@@ -679,7 +689,7 @@ function checkFeedback() {
   // 다음 구간이 이번 구간과 다르면 예고해준다
   const now = session.metrics().step.label
   const soon = session.stepLabelAt(elapsed + 60)
-  const fb = buildFeedback(w, session.metrics().gap, idx, soon !== now ? soon : undefined)
+  const fb = buildFeedback(w, session.metrics().gap, idx, soon !== now ? soon : undefined, due)
   feedbackModal.show(fb)
   cues.feedback(fb.title)
 }
@@ -781,13 +791,18 @@ function showSummary() {
   releaseWakeLock()
 
   const completed = m.progress >= 0.999
-  $('sum-title').textContent = completed ? '코스 완주' : '세션 종료'
+  $('sum-title').textContent = completed ? '완주 성공!' : '수고했어요!'
 
-  const beat = m.gap >= 0
+  // 끝난 직후엔 숫자보다 기분이 먼저다 — 진 경우에도 해낸 것(저은 거리·시간)부터 말하고 다음 목표를 준다
+  const km = (m.distance / 1000).toFixed(2)
+  const minutes = Math.max(1, Math.round(m.elapsed / 60))
+  const gapM = Math.abs(Math.round(m.gap))
   const lines = [
-    beat
-      ? `<b>${s.course.name}</b>에서 페이스 보트를 <b>${Math.round(m.gap)}m</b> 앞섰습니다.`
-      : `<b>${s.course.name}</b>에서 페이스 보트에 <b>${Math.abs(Math.round(m.gap))}m</b> 뒤졌습니다.`,
+    m.gap >= 0
+      ? `<b>${s.course.name}</b>에서 페이스 보트를 <b>${gapM}m</b> 따돌렸어요! 오늘 노 젓기, 정말 멋졌어요.`
+      : gapM <= 30
+        ? `페이스 보트와 단 <b>${gapM}m</b> 차이! 거의 나란히 들어왔어요. 다음엔 분명 앞설 거예요.`
+        : `<b>${minutes}분</b> 동안 <b>${km}km</b>를 저었어요. 끝까지 해낸 것 자체가 오늘의 승리예요.`,
   ]
 
   // 고스트(지난 최고 기록) 대비.
@@ -798,10 +813,12 @@ function showSummary() {
     const diff = m.distance - prevBest.distance
     lines.push(
       diff >= 0
-        ? `지난 최고 기록을 <b>${Math.round(diff)}m</b> 넘었습니다. 새 기록입니다.`
-        : `지난 최고 기록에 <b>${Math.abs(Math.round(diff))}m</b> 못 미쳤습니다.`,
+        ? `내 최고 기록을 <b>${Math.round(diff)}m</b> 넘었어요. 새 기록 달성!`
+        : `최고 기록까지 <b>${Math.abs(Math.round(diff))}m</b>만 더 가면 돼요. 손에 잡히는 거리예요.`,
     )
-    if (diff >= 0) { newRecord = true; $('sum-title').textContent = '새 최고 기록' }
+    if (diff >= 0) { newRecord = true; $('sum-title').textContent = '새 최고 기록!' }
+  } else if (completed && !prevBest) {
+    lines.push('이 코스 첫 완주예요. 다음부터는 오늘의 내가 옆 레인에서 함께 달려요.')
   }
   $('screen-summary').classList.toggle('pb', newRecord)
   $('sum-verdict').innerHTML = lines.join('<br>')

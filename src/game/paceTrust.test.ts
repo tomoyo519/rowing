@@ -192,3 +192,31 @@ describe('따로 연결한 심박 센서', () => {
     expect(s.metrics().heartRate).toBe(142)
   })
 })
+
+describe('기기 페이스 보정', () => {
+  it('기기 페이스가 거리보다 15% 느리게 나오면 화면 페이스를 거리에 맞춰 페이스 보트와 어긋나지 않게 한다', () => {
+    // 목표 2:15(3.70 m/s)로 실제로 젓는데, 기기는 순간 페이스를 15% 느리게(2:35) 보낸다.
+    // 예전엔 화면이 2:35라 사용자가 2:15로 맞추려 더 세게 저으면 페이스 보트가 뒤로 처졌다.
+    const { s, clock } = started(steady, 135)
+    const v = 500 / 135
+    row(s, clock, 40, v, split => Math.round(split * 1.15))
+    const m = s.metrics()
+    expect(m.paceDistrusted).toBe(false)
+    expect(m.speedSource).toBe('pace')
+    expect(Math.abs(m.split - 135)).toBeLessThan(3)
+  })
+
+  it('정지 중 값을 붙드는 기기에서도 배율이 무너지지 않는다', () => {
+    const { s, clock } = started(steady, 135)
+    const v = 500 / 135
+    row(s, clock, 30, v)
+    // 노를 놓았는데 기기는 마지막 페이스를 붙들고 보낸다 — 거리는 멈춘다
+    for (let i = 0; i < 20; i++) {
+      clock.at += 500
+      s.onSample({ at: clock.at, strokeRate: 0, strokeCount: clock.count, totalDistance: Math.round(clock.dist), instantaneousPace: 135 })
+      run(s, 0.5)
+    }
+    row(s, clock, 6, v)
+    expect(Math.abs(s.metrics().split - 135)).toBeLessThan(4)
+  })
+})

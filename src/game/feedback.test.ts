@@ -27,10 +27,19 @@ describe('toneOf', () => {
 })
 
 describe('buildFeedback', () => {
-  it('목표보다 느리면 더 빨리 타라고 한다', () => {
-    const f = buildFeedback(w(150, 140), -30, 0)
-    expect(f.tone).toBe('behind')
-    expect(f.title).toContain('빨리')
+  it('목표보다 느려도 꾸짖지 않고, 바로 할 수 있는 동작으로 올리라고 한다', () => {
+    for (const i of [0, 1, 2]) {
+      const f = buildFeedback(w(150, 140), -30, i)
+      expect(f.tone).toBe('behind')
+      expect(f.title).not.toMatch(/느|못/)
+      expect(f.body).toContain('올려')
+    }
+  })
+
+  it('지금까지 저은 시간과 최근 거리를 먼저 짚어 준다', () => {
+    const f = buildFeedback(w(140, 140), 0, 1, undefined, 600)
+    expect(f.body.startsWith('10분 돌파!')).toBe(true)
+    expect(f.body).toContain('m를 저었어요')
   })
 
   it('목표보다 빠르면 칭찬한다', () => {
@@ -53,6 +62,6 @@ describe('buildFeedback', () => {
 
   it('다음 구간이 있으면 예고를 붙인다', () => {
     expect(buildFeedback(w(140, 140), 0, 0, '푸시').body).toContain('푸시')
-    expect(buildFeedback(w(140, 140), 0, 0).body).not.toContain('구간입니다')
+    expect(buildFeedback(w(140, 140), 0, 0).body).not.toContain('구간')
   })
 })

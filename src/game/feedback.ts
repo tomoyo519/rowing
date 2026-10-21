@@ -35,31 +35,36 @@ export interface Feedback {
 const BIG = 4.0
 const SMALL = 1.5
 
+/**
+ * 노를 젓는 중에 읽고(그리고 음성으로 듣고) 힘이 나는 말. 느릴 때도 꾸짖지 않는다 —
+ * 지금까지 버틴 걸 먼저 인정하고, 바로 할 수 있는 동작 하나(레이트·다리·캐치)를 준다.
+ * 제목은 음성으로도 읽히므로 짧게, 이모지 없이.
+ */
 const LINES: Record<Tone, { title: string; body: string }[]> = {
   great: [
-    { title: '아주 좋습니다', body: '목표보다 한참 앞서 있어요. 이 페이스 유지해보세요.' },
-    { title: '훌륭해요', body: '지금 흐름이면 기록 나옵니다. 호흡만 잃지 마세요.' },
-    { title: '기세 좋아요', body: '목표를 크게 앞섰습니다. 무리 아니면 계속 밀어보세요.' },
+    { title: '완전 날아가요!', body: '목표보다 한참 빨라요. 오늘 컨디션 최고네요.' },
+    { title: '이 페이스 미쳤어요!', body: '기록 갱신 냄새가 나요. 호흡만 지키면서 그대로!' },
+    { title: '엔진 풀가동!', body: '페이스 보트가 따라오느라 바빠요. 정말 멋져요.' },
   ],
   good: [
-    { title: '잘 하고 있어요', body: '목표보다 조금 앞섭니다. 이대로 유지하세요.' },
-    { title: '좋은 페이스', body: '살짝 앞서 있어요. 리듬 그대로 가면 됩니다.' },
-    { title: '순조롭습니다', body: '목표 위에서 안정적으로 타고 있어요.' },
+    { title: '좋아요, 앞서가요!', body: '목표보다 살짝 빨라요. 지금 리듬 정말 좋아요.' },
+    { title: '흐름 탔어요!', body: '편안하게 앞서는 중이에요. 이 느낌 그대로 가요.' },
+    { title: '잘하고 있어요!', body: '꾸준함이 곧 실력이에요. 계속 이렇게만!' },
   ],
   onpace: [
-    { title: '정확히 목표 페이스', body: '흔들림 없이 잘 타고 있습니다.' },
-    { title: '페이스 그대로', body: '목표에 딱 맞게 가고 있어요. 좋습니다.' },
-    { title: '안정적입니다', body: '계획한 대로 진행 중이에요.' },
+    { title: '완벽한 페이스!', body: '목표에 딱 맞췄어요. 메트로놈 같은 리듬이에요.' },
+    { title: '정확해요!', body: '계획한 그대로 가고 있어요. 프로처럼 타는 중!' },
+    { title: '흔들림 제로!', body: '페이스 보트와 나란히. 이게 바로 실력이에요.' },
   ],
   push: [
-    { title: '조금만 더', body: '목표보다 살짝 처졌어요. 한 단계만 올려보세요.' },
-    { title: '페이스 올릴 때', body: '조금 느려졌습니다. 다리로 더 밀어보세요.' },
-    { title: '살짝 아쉬워요', body: '목표에서 조금 벌어졌어요. 따라붙을 수 있습니다.' },
+    { title: '거의 다 왔어요!', body: '목표까지 몇 초 차이예요. 다리로 한 번 더 밀면 바로 붙어요.' },
+    { title: '한 끗 차이!', body: '조금만 올리면 목표예요. 다음 10스트로크만 힘줘 봐요.' },
+    { title: '할 수 있어요!', body: '금방 따라잡을 거리예요. 캐치부터 힘 있게!' },
   ],
   behind: [
-    { title: '더 빨리 타야 해요', body: '목표 페이스에서 많이 벌어졌습니다.' },
-    { title: '속도를 올리세요', body: '지금부터 따라붙어야 합니다. 레이트부터 높여보세요.' },
-    { title: '집중해봅시다', body: '목표보다 많이 느립니다. 한 스트로크씩 강하게.' },
+    { title: '괜찮아요, 다시 가요!', body: '지금부터가 진짜예요. 레이트를 2만 올려 볼까요?' },
+    { title: '숨 고르고 다시!', body: '여기까지 버틴 것만으로도 대단해요. 다음 5분은 한 단계만 올려 봐요.' },
+    { title: '포기는 없어요!', body: '한 스트로크씩 다리로 강하게, 페이스를 조금씩 올려 봐요. 페이스 보트 금방 보여요.' },
   ],
 }
 
@@ -77,9 +82,10 @@ export function toneOf(delta: number): Tone {
  * @param gap 페이스 보트 대비 거리차 (m). +면 앞섬
  * @param idx 몇 번째 체크포인트인지 — 문구를 돌려쓰기 위한 인덱스
  * @param nextStep 다음에 올 구간 이름 (있으면 예고를 덧붙인다)
+ * @param elapsedSec 지금까지 저은 시간 (초). 있으면 "10분 돌파!"처럼 지나온 길을 먼저 짚어 준다
  */
 export function buildFeedback(
-  w: WindowStats, gap: number, idx: number, nextStep?: string,
+  w: WindowStats, gap: number, idx: number, nextStep?: string, elapsedSec?: number,
 ): Feedback {
   const windowLabel = w.seconds >= 60
     ? `최근 ${Math.round(w.seconds / 60)}분`
@@ -90,7 +96,10 @@ export function buildFeedback(
   const pick = pool[idx % pool.length]!
 
   let body = pick.body
-  if (nextStep) body += ` 다음은 ‘${nextStep}’ 구간입니다.`
+  if (elapsedSec !== undefined && elapsedSec >= 60) {
+    body = `${Math.round(elapsedSec / 60)}분 돌파! 최근 ${Math.round(w.distance).toLocaleString('ko-KR')}m를 저었어요. ${body}`
+  }
+  if (nextStep) body += ` 다음은 ‘${nextStep}’ 구간, 준비됐죠?`
 
   const sign = delta >= 0 ? '+' : '−'
   return {

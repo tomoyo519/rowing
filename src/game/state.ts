@@ -81,6 +81,17 @@ export const PACE_DISTRUST_AFTER_MS = 6000
 /** 창 안에서 최소 이만큼(m, m/s)은 움직였을 때만 비교한다 — 관성으로 도는 플라이휠과 정지는 비교 대상이 아니다. */
 const PACE_CHECK_MIN_METERS = 4
 const PACE_CHECK_MIN_SPEED = 1.0
+/**
+ * 기기 페이스 보정 창 (ms). 이 시간 동안 기기 페이스로 '갔어야 할 거리'와 실제 기기 거리를 비교해 배율을 잡는다.
+ * 저가 콘솔은 순간 페이스와 거리를 서로 다른 모델로 계산해 10~20%씩 어긋난다 — 화면 페이스는 목표대로인데
+ * 거리는 더 늘어 페이스 보트가 뒤로 처진다. 적분끼리 비교하므로 가속·감속 중에도 치우치지 않는다.
+ */
+export const PACE_CALIBRATION_WINDOW_MS = 20_000
+/** 창 안에서 이만큼(m, ms)은 움직여야 배율을 새로 잡는다 */
+const PACE_CALIBRATION_MIN_METERS = 30
+const PACE_CALIBRATION_MIN_MS = 8_000
+/** 보정 배율의 한계. 이보다 크게 어긋나는 기기는 checkPaceTrust가 거리 속도로 넘긴다. */
+const PACE_CALIBRATION_MAX = PACE_MISMATCH_RATIO
 /** 레이스 중 바꿀 수 있는 기준 스플릿의 범위 (초/500m) */
 export const BASE_SPLIT_MIN = 90
 export const BASE_SPLIT_MAX = 240
@@ -199,6 +210,16 @@ export class Session {
   private lastPaceCheckAt: number | null = null
   private paceDistrusted = false
   private speedSource: SpeedSource = 'none'
+  /**
+   * 기기 페이스(또는 파워 환산 속도)에 곱하는 배율 — 실제 기기 거리 / 기기 속도를 적분한 거리.
+   * 기기 지식이라 레이스를 새로 시작해도 지우지 않는다.
+   */
+  private paceScale = 1
+  /** 보정 창: 거리를 실은 샘플마다 (시각, 기기 거리, 기기 속도 적분 거리) */
+  private calibrationLog: { at: number; d: number; r: number }[] = []
+  /** 기기 속도를 시간으로 적분한 거리 (m). 직전 유효 속도를 다음 샘플까지 유지한 것으로 본다. */
+  private reportedIntegral = 0
+  private lastIntegralAt: number | null = null
   /** 로잉머신과 별개로 연결한 심박 센서의 마지막 값. 기기 FTMS 심박보다 우선한다. */
   private externalHeartRate: { bpm: number; at: number } | null = null
 
@@ -282,6 +303,41 @@ export class Session {
     const span = (s.at - first.at) / 1000
     if (span * 1000 < DISTANCE_WINDOW_MIN_MS) return null
     return (d - first.d) / span
+  }
+
+  /**
+   * 기기 속도를 적분한 거리와 실제 기기 거리를 보정 창에서 비교해 paceScale을 갱신한다.
+   * 멈춘 동안(거리 정지·명시적 0)에는 창을 비운다 — 값을 붙들고 보내는 콘솔은 정지 중에도 페이스가 남아 있어
+   * 그대로 쌓으면 배율이 낮아진다. 배율은 그대로 둔다.
+   */
+  private calibratePace(s: RowerSample, stopped: boolean) {
+    const prevAt = this.lastIntegralAt
+    this.lastIntegralAt = s.at
+    if (stopped || this.paceDistrusted) {
+      this.calibrationLog.length = 0
+      return
+    }
+    if (prevAt !== null && s.at > prevAt && this.lastReportedSpeed !== null) {
+      // 패킷이 몇 초씩 끊겼다면 그 사이 속도는 모른다 — 적분하지 않고 창을 새로 시작한다
+      const dt = s.at - prevAt
+      if (dt > 3000) this.calibrationLog.length = 0
+      else this.reportedIntegral += this.lastReportedSpeed * dt / 1000
+    }
+    const d = s.totalDistance
+    const log = this.calibrationLog
+    const last = log[log.length - 1]
+    // 거리가 바뀐 샘플만 창의 끝점으로 쓴다 — 스트로크마다 한 번 거리를 올리는 콘솔에서 계단 중간을 끝점으로 잡으면
+    // 마지막 계단이 빠져 배율이 낮게 나온다
+    if (d === undefined || (last && d === last.d)) return
+    if (last && (d < last.d - 5 || s.at < last.at)) log.length = 0
+    log.push({ at: s.at, d, r: this.reportedIntegral })
+    while (log.length > 2 && s.at - log[1]!.at >= PACE_CALIBRATION_WINDOW_MS) log.shift()
+    const first = log[0]!
+    const moved = d - first.d
+    const predicted = this.reportedIntegral - first.r
+    if (s.at - first.at < PACE_CALIBRATION_MIN_MS || moved < PACE_CALIBRATION_MIN_METERS || predicted <= 0) return
+    const ratio = moved / predicted
+    this.paceScale = Math.min(PACE_CALIBRATION_MAX, Math.max(1 / PACE_CALIBRATION_MAX, ratio))
   }
 
   /**
@@ -518,7 +574,7 @@ export class Session {
     let speed: number
     let explicitlyStopped = false
     if (reported !== null && !this.paceDistrusted) {
-      speed = reported
+      speed = reported * this.paceScale
       this.zeroSince = null
       this.speedSource = s.instantaneousPace !== undefined && s.instantaneousPace >= PACE_MIN && s.instantaneousPace <= PACE_MAX ? 'pace' : 'power'
     } else if (distanceSpeed !== null) {
@@ -571,6 +627,7 @@ export class Session {
     } else {
       this.boat.onSample(s.totalDistance ?? null, speed)
     }
+    this.calibratePace(s, explicitlyStopped || this.stoppedForStagnation)
     // 한 번의 0 패킷만으로 기준 속도를 0으로 낮추면, 분할 알림에서 `power: 0` 뒤에
     // 붙들린 pace 패킷이 오는 것만으로도 새 가속으로 오판한다. 충분히 오래 0이 이어져
     // 실제 정지로 확정됐을 때만 0을 기준으로 삼는다.
