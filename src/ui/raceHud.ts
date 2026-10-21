@@ -97,6 +97,21 @@ export class RaceHud {
     this.renderProfile()
   }
 
+  /** 레이스 중 목표 페이스가 바뀌면 페이스 보트의 예상 완주 거리, 곧 결승선이 옮겨진다 */
+  setTotal(total: number) {
+    this.total = Math.max(1, total)
+    this.setText('route-total', `${(this.total / 1000).toFixed(1)} km`)
+    this.lastMiniMapAt = -1
+  }
+
+  /** 사용자가 목표 페이스를 바꿨다 — 목표 숫자가 한 번 튀어 "바뀌었다"를 알린다 */
+  pulseTarget() {
+    const el = $('pg-target')
+    el.classList.remove('settle')
+    void el.offsetWidth
+    el.classList.add('settle')
+  }
+
   /** 화면 크기가 바뀌면 코스 띠를 새 폭으로 다시 그린다 (늘리지 않으므로 선 두께가 유지된다) */
   resize() {
     this.renderProfile()
@@ -148,7 +163,8 @@ export class RaceHud {
     if (candidate !== this.splitText) {
       // 정수 초 경계를 0.4초 넘게 지나야 글자가 바뀐다 — 경계에서 2:19↔2:20이 떨리지 않는다
       const frac = isFinite(this.dispSplit) ? this.dispSplit - Math.floor(this.dispSplit) : 0.5
-      if (!isFinite(this.dispSplit) || frac > 0.4 || frac < 0.1 || candidate === '--:--') {
+      // '--:--'에서 처음 숫자가 생길 때와 숫자가 사라질 때는 기다리지 않는다 — 안 그러면 고른 페이스에선 첫 숫자가 한참 안 뜬다
+      if (!isFinite(this.dispSplit) || frac > 0.4 || frac < 0.1 || candidate === '--:--' || this.splitText === '--:--') {
         this.splitText = candidate
         const hero = $('s-split')
         hero.classList.remove('settle')
@@ -158,7 +174,8 @@ export class RaceHud {
     }
     this.setText('s-split', this.splitText)
     const idle = this.splitText === '--:--'
-    this.setText('dial-u', idle ? '노를 저으면 표시됩니다' : '')
+    // 기기가 페이스를 안 주거나(또는 단위가 틀려 버렸거나) 거리 증가분으로 잰 값이면 그렇다고 적는다 — 숫자가 조금 더 거칠다
+    this.setText('dial-u', idle ? '노를 저으면 표시됩니다' : m.speedSource === 'distance' ? '거리로 계산한 페이스' : '')
     this.dispPow = ema(this.dispPow, m.power, dt, 1.0)
     this.setText('s-pow', String(Math.round(this.dispPow)))
     this.setText('s-spm', String(Math.round(m.spm)))

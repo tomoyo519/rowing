@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseRowerData } from './rowerData'
+import { parseRowerData, describeRowerData } from './rowerData'
 
 const build = (bytes: number[]) => new DataView(new Uint8Array(bytes).buffer)
 
@@ -50,6 +50,13 @@ describe('parseRowerData', () => {
     expect(d.strokeRate).toBe(26)       // 여기까지는 살린다
     expect(d.totalDistance).toBeUndefined()
     expect(d.truncated).toBe(true)
+  })
+
+  it('진단용 요약은 실린 필드만 값과 단위로 적는다', () => {
+    expect(describeRowerData({ strokeRate: 26, totalDistance: 1234, instantaneousPace: 130, heartRate: 140 }))
+      .toBe('spm=26 dist=1234m pace=130s hr=140bpm')
+    expect(describeRowerData({ truncated: true })).toBe('truncated')
+    expect(describeRowerData({})).toBe('필드 없음')
   })
 
   it('파워는 sint16이라 음수가 나올 수 있다', () => {

@@ -114,6 +114,35 @@ function getUint24LE(v: DataView, o: number): number {
   return v.getUint8(o) | (v.getUint8(o + 1) << 8) | (v.getUint8(o + 2) << 16)
 }
 
+/**
+ * 진단 로그용 한 줄 요약 — 실린 필드만 값과 함께.
+ * 실기기가 페이스·심박을 보내는지, 어떤 단위로 보내는지는 이 줄을 복사해 보면 알 수 있다.
+ */
+export function describeRowerData(d: RowerData): string {
+  const parts: string[] = []
+  const put = (key: string, value: number | undefined, unit = '') => {
+    if (value !== undefined) parts.push(`${key}=${value}${unit}`)
+  }
+  put('spm', d.strokeRate)
+  put('strokes', d.strokeCount)
+  put('avgSpm', d.avgStrokeRate)
+  put('dist', d.totalDistance, 'm')
+  put('pace', d.instantaneousPace, 's')
+  put('avgPace', d.averagePace, 's')
+  put('power', d.instantaneousPower, 'W')
+  put('avgPower', d.averagePower, 'W')
+  put('resist', d.resistanceLevel)
+  put('kcal', d.totalEnergy)
+  put('kcal/h', d.energyPerHour)
+  put('kcal/min', d.energyPerMinute)
+  put('hr', d.heartRate, 'bpm')
+  put('met', d.metabolicEquivalent)
+  put('elapsed', d.elapsedTime, 's')
+  put('remain', d.remainingTime, 's')
+  if (d.truncated) parts.push('truncated')
+  return parts.length ? parts.join(' ') : '필드 없음'
+}
+
 /** 실기기 검증용. 콘솔에 원본 바이트를 찍어 스펙과 대조할 때 쓴다. */
 export function hexdump(view: DataView): string {
   const b: string[] = []

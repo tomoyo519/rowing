@@ -474,7 +474,8 @@ describe('노를 놓으면 배가 멈춘다', () => {
     const { at, count, dist } = rowFor(s, 4)
     const before = s.boat.speed
     // 0.5초마다 2m — 4 m/s로 젓고 있다. 옛 속도(3.4)를 붙들면 스플릿·게이지가 실제와 어긋난다.
-    for (let i = 0; i < 9; i++) {
+    // 거리 속도는 3초 창의 평균이라(정수 미터 떨림을 누르기 위해) 새 속도가 자리 잡는 데 창 + 보트 관성만큼 걸린다.
+    for (let i = 0; i < 12; i++) {
       s.onSample({ at: at + i * 500, strokeRate: 26, strokeCount: count + i, totalDistance: dist + i * 2 })
       run(s, 0.5)
     }

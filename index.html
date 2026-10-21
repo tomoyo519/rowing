@@ -241,6 +241,21 @@
   .tier-hint { color: var(--muted); font-size: 13px; text-align: center; margin: 0 0 28px; }
   .avatars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 28px; max-width: 420px; }
   .avatar b { font-size: 17px; }
+  .hr-row {
+    display: flex; align-items: center; gap: 12px; max-width: 560px; margin: -12px 0 28px;
+    padding: 11px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line);
+  }
+  .hr-row[hidden] { display: none; }
+  .hr-row .heart { width: 15px; height: 15px; flex: none; }
+  .hr-row.live .heart { animation: beat var(--beat, 1s) ease-in-out infinite; }
+  .hr-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .hr-text b { font-size: 14px; }
+  .hr-text span { font-size: 12px; color: var(--muted); line-height: 1.4; }
+  .hr-btn {
+    flex: none; padding: 9px 14px; border-radius: 10px; font-size: 13px; font-weight: 600;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  }
+  .hr-btn:disabled { opacity: .5; }
 
   /* ── 레이스 ── */
   #screen-race::after {
@@ -354,10 +369,21 @@
   .pace-gauge.idle { --pg-color: rgba(255,255,255,.38); }
   .pace-gauge.enter { animation: pg-pulse 1s ease-in-out 2; }
   @keyframes pg-pulse { 50% { box-shadow: var(--glass-hi), 0 0 0 3px rgba(255,98,82,.5); } }
-  .pg-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 7px; }
-  .pg-k { font-size: 11px; font-weight: 700; color: var(--ink-2); }
+  .pg-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 7px; }
+  .pg-k { font-size: 11px; font-weight: 700; color: var(--ink-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pg-target { font-size: 11px; color: var(--ink-3); white-space: nowrap; }
-  .pg-target b { font-size: 14px; color: #fff; margin: 0 2px; }
+  .pg-target b { display: inline-block; font-size: 14px; color: #fff; margin: 0 2px; }
+  .pg-target b.settle { animation: pg-target-pop .4s cubic-bezier(.2,.9,.3,1); }
+  @keyframes pg-target-pop { 0% { transform: scale(1.35); } 100% { transform: none; } }
+  /* 레이스 중 목표 페이스 조절 — 왼쪽이 느림, 오른쪽이 빠름: 아래 게이지와 같은 방향 */
+  .pg-adjust { display: inline-flex; align-items: center; gap: 7px; flex: none; }
+  .pg-step {
+    pointer-events: auto; height: 32px; padding: 0 11px; border-radius: 9px;
+    background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.18); color: #fff;
+    font-size: 11.5px; font-weight: 700; white-space: nowrap; transition: background .12s, transform .08s;
+  }
+  .pg-step:active { background: rgba(255,255,255,.24); transform: scale(.95); }
+  .pg-step:disabled { opacity: .35; }
   .pg-row { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; }
   .pg-delta { display: flex; align-items: baseline; gap: 3px; min-width: 86px; }
   .pg-delta b { font-size: 30px; font-weight: 800; line-height: 1; color: var(--pg-color); }
@@ -472,7 +498,9 @@
   .start-hint {
     position: absolute; left: 50%; top: 34%; transform: translateX(-50%);
     display: flex; flex-direction: column; align-items: center; gap: 6px;
-    padding: 14px 26px; text-align: center;
+    padding: 14px 26px; text-align: center; white-space: nowrap;
+    /* left:50%라 기본 폭이 화면의 절반으로 잡혀 문구가 줄바꿈된다 — 내용 폭을 쓴다 */
+    width: max-content; max-width: calc(100vw - 32px);
     color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,.7);
     animation: start-hint-pulse 1.6s ease-in-out infinite;
   }
@@ -560,7 +588,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .pace-gauge.enter, .start-hint, .linkbar .dot, .stat.live .heart, .cadence strong.beat, .hero.settle,
+    .pace-gauge.enter, .start-hint, .linkbar .dot, .stat.live .heart, .cadence strong.beat, .hero.settle, .pg-target b.settle, .hr-row.live .heart,
     .cd-wrap.pop .cd-ring circle, .cd-num.pop, .fb-card { animation: none !important; }
     .pg-fill, .seg-bar i { transition: none; }
   }
@@ -578,9 +606,10 @@
   @keyframes cd-ring { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 1; } }
   .countdown.ready .cd-ring, .countdown.go .cd-ring { opacity: 0; }
   .countdown.go .cd-num { color: var(--st-ahead-ink); }
-  .cd-num { font-size: 150px; font-weight: 800; line-height: 1; }
-  .countdown.ready .cd-num { font-size: 84px; }
-  .cd-sub { font-size: 18px; font-weight: 600; color: rgba(255,255,255,.82); letter-spacing: .04em; min-height: 24px; }
+  .cd-num { font-size: 150px; font-weight: 800; line-height: 1; white-space: nowrap; }
+  /* 두 글자 문구는 150px이면 240px 링보다 넓어 한 글자씩 줄바꿈된다 */
+  .countdown.ready .cd-num, .countdown.go .cd-num { font-size: 96px; }
+  .cd-sub { font-size: 18px; font-weight: 600; color: rgba(255,255,255,.82); letter-spacing: .04em; min-height: 24px; white-space: nowrap; }
   /* 숫자가 크게 떴다가 가라앉으며 1초를 채운다 — 넘어가는 순간이 또렷하다 */
   .cd-num.pop { animation: cd-pop .95s cubic-bezier(.2,.8,.2,1) both; }
   @keyframes cd-pop {
@@ -697,6 +726,13 @@
     <h2>아바타</h2>
     <div class="avatars" id="avatars" role="group" aria-label="아바타 체형"></div>
 
+    <!-- 로잉머신이 FTMS로 심박을 안 보내는 경우가 많다. 벨트·시계를 따로 붙이면 HUD의 심박 칸이 채워진다. Web Bluetooth가 있을 때만 보인다. -->
+    <div class="hr-row" id="hr-row" hidden>
+      <svg class="heart" aria-hidden="true"><use href="#i-heart"/></svg>
+      <div class="hr-text"><b id="hr-title">심박 센서</b><span id="hr-sub">로잉머신이 심박을 보내지 않으면 심박 벨트나 시계를 따로 연결하세요</span></div>
+      <button class="hr-btn" id="btn-hr" type="button">연결</button>
+    </div>
+
     <h2>목표 페이스</h2>
     <div class="tiers" id="tiers"></div>
     <p class="tier-hint" id="tier-hint"></p>
@@ -771,7 +807,11 @@
           <div class="pace-gauge glass idle" id="pace-gauge">
             <div class="pg-head">
               <span class="pg-k">이 속도는 지켜야 합니다</span>
-              <span class="pg-target">목표 <b class="num" id="pg-target">--:--</b>/500m</span>
+              <div class="pg-adjust" role="group" aria-label="목표 페이스 조절 (5초 단위)">
+                <button class="pg-step" id="pg-slower" type="button" aria-label="목표 페이스 5초 느리게">◀ 느리게</button>
+                <span class="pg-target">목표 <b class="num" id="pg-target">--:--</b>/500m</span>
+                <button class="pg-step" id="pg-faster" type="button" aria-label="목표 페이스 5초 빠르게">빠르게 ▶</button>
+              </div>
             </div>
             <div class="pg-row">
               <div class="pg-delta"><b class="num" id="pg-delta-n">—</b><i>s</i><span id="pg-word"></span></div>

@@ -4,7 +4,9 @@ import {
   COURSES, PACE_TIERS, courseGroups, projectedDistance, courseRangeLabel,
   type Course, type PaceTier,
 } from './game/courses'
-import { Session, type Phase, type StallReason } from './game/state'
+import { Session, BASE_SPLIT_MIN, BASE_SPLIT_MAX, BASE_SPLIT_STEP, type Phase, type StallReason } from './game/state'
+import { HeartRateSensor } from './ble/heartRate'
+import { describeRowerData } from './ble/rowerData'
 import { buildFeedback } from './game/feedback'
 import { saveRecord, thinCurve, personalBest, type SessionRecord } from './game/history'
 import { FeedbackModal } from './ui/feedbackModal'
@@ -164,6 +166,14 @@ async function connectBle(scanMode: BleScanMode) {
   button.textContent = '연결 확인 중…'
   const src = new FtmsSource()
   src.onDiagnostic(appendBleLog)
+  // 로잉머신이 심박 서비스를 따로 내보내면 그 값을 쓴다. 따로 연결한 벨트가 살아 있으면 그쪽이 우선이다.
+  src.onHeartRate((bpm, at) => {
+    if (source !== src && source !== null) return
+    rowerHr = { bpm, at }
+    if (hrSensor?.status === 'connected') return
+    session?.setExternalHeartRate(bpm, at)
+    if ($('screen-course').classList.contains('active')) syncHrRow()
+  })
   src.onStatus((s, d) => {
     if (s === 'error') {
       err.textContent = d ?? '연결에 실패했습니다'
@@ -223,11 +233,84 @@ $('btn-sim').addEventListener('click', async () => {
   goCourseSelect()
 })
 
+// ── 심박 센서 (선택) ────────────────────────────────────────
+// 로잉머신이 FTMS로 심박을 안 보내면 HUD의 심박 칸이 '—'로 남는다. 벨트·시계를 따로 붙이면 그 값이 우선한다.
+let hrSensor: HeartRateSensor | null = null
+let lastHr: { bpm: number; at: number } | null = null
+/** 로잉머신 자신의 심박 서비스에서 받은 마지막 값 */
+let rowerHr: { bpm: number; at: number } | null = null
+
+function syncHrRow() {
+  const row = $('hr-row')
+  if (!navigator.bluetooth) { row.hidden = true; return }
+  row.hidden = false
+  const status = hrSensor?.status ?? 'idle'
+  const title = $('hr-title')
+  const sub = $('hr-sub')
+  const button = $<HTMLButtonElement>('btn-hr')
+  const name = hrSensor?.name || '심박 센서'
+  button.disabled = status === 'connecting'
+  row.classList.toggle('live', status === 'connected' && lastHr !== null)
+  if (lastHr) row.style.setProperty('--beat', `${(60 / lastHr.bpm).toFixed(2)}s`)
+  switch (status) {
+    case 'connecting':
+      title.textContent = '심박 센서'
+      sub.textContent = '기기 선택창에서 벨트나 시계를 고르세요'
+      button.textContent = '연결 중…'
+      break
+    case 'connected':
+      title.textContent = `${name} · 연결됨`
+      sub.textContent = lastHr ? `${lastHr.bpm} bpm` : '심박을 기다리는 중 — 벨트가 피부에 닿아 있어야 합니다'
+      button.textContent = '해제'
+      break
+    case 'reconnecting':
+      title.textContent = `${name} · 다시 연결하는 중`
+      sub.textContent = '벨트가 멀어졌거나 꺼졌습니다'
+      button.textContent = '해제'
+      break
+    default:
+      title.textContent = '심박 센서'
+      sub.textContent = status === 'error'
+        ? '연결하지 못했습니다. 벨트가 다른 앱에 붙어 있으면 먼저 떼어 주세요'
+        : rowerHr
+          ? `로잉머신에서 심박을 받는 중 · ${rowerHr.bpm} bpm`
+          : '로잉머신이 심박을 보내지 않으면 심박 벨트나 시계를 따로 연결하세요'
+      button.textContent = '연결'
+  }
+}
+
+$('btn-hr').addEventListener('click', async () => {
+  if (hrSensor && (hrSensor.status === 'connected' || hrSensor.status === 'reconnecting')) {
+    await hrSensor.disconnect()
+    hrSensor = null
+    lastHr = null
+    syncHrRow()
+    return
+  }
+  const sensor = new HeartRateSensor()
+  hrSensor = sensor
+  sensor.onStatus(() => { if (hrSensor === sensor) syncHrRow() })
+  sensor.onReading((bpm, at) => {
+    if (hrSensor !== sensor) return
+    lastHr = { bpm, at }
+    session?.setExternalHeartRate(bpm, at)
+    if ($('screen-course').classList.contains('active')) syncHrRow()
+  })
+  try {
+    await sensor.connect(isIPad ? 'all' : 'hr')
+  } catch {
+    // 상태 콜백이 이미 문구를 바꿨다. 사용자가 선택창을 닫은 것도 여기로 온다.
+    if (hrSensor === sensor) hrSensor = null
+    syncHrRow()
+  }
+})
+
 // ── 코스 선택 ───────────────────────────────────────────────
 function goCourseSelect() {
   renderAvatars()
   renderTiers()
   renderCourses()
+  syncHrRow()
   show('screen-course')
 }
 
@@ -313,6 +396,7 @@ function renderCourses() {
 $('btn-back').addEventListener('click', async () => {
   await source?.disconnect()
   source = null
+  rowerHr = null
   show('screen-connect')
 })
 
@@ -372,6 +456,8 @@ let lastStallReason: StallReason = null
 let lastStepIntensity = 1
 /** 출발 대기 → 출발 전환을 잡기 위한 직전 세션 상태 */
 let lastPhase: Phase | null = null
+/** 기기 페이스를 버리고 거리로 잰 속도로 바꾼 사실을 진단 로그에 한 번만 남기기 위한 직전 값 */
+let lastPaceDistrusted = false
 
 window.addEventListener('resize', () => { view?.resize(); if (view) hud.resize() })
 window.addEventListener('orientationchange', () => setTimeout(() => { view?.resize(); if (view) hud.resize() }, 150))
@@ -386,6 +472,10 @@ async function startRace() {
   // 개발 중에는 `?weather=seed`로 날씨 일정을 고정해 같은 하늘을 다시 볼 수 있다.
   const weatherSeed = new URLSearchParams(location.search).get('weather')
   session = new Session(selectedCourse, selectedTier.split, ghost, weatherSeed ? `${selectedCourse.id}:${weatherSeed}` : undefined)
+  const knownHr = (hrSensor?.status === 'connected' ? lastHr : null) ?? rowerHr
+  if (knownHr) session.setExternalHeartRate(knownHr.bpm, knownHr.at)
+  lastPaceDistrusted = false
+  syncPaceButtons()
   ambience.reset(`${session.weatherSeed}:ambience`)
   void ambience.prepare()
   unsub?.()
@@ -509,6 +599,29 @@ $('btn-cam').addEventListener('click', () => {
 $('sim-drop').addEventListener('click', () => {
   if (source instanceof MockSource) source.simulateDropout(7000)
 })
+
+// ── 레이스 중 목표 페이스 조절 ──────────────────────────────
+// 기준 스플릿을 5초씩 옮긴다. 구간 강도는 그대로 곱해지므로 코스의 오르내림은 유지되고,
+// 페이스 보트는 관성으로 새 속도에 붙는다. 결승선(예상 완주 거리)은 남은 시간을 새 페이스로 다시 계산해 옮긴다.
+function syncPaceButtons() {
+  const base = session?.baseSplit ?? selectedTier.split
+  $<HTMLButtonElement>('pg-slower').disabled = !session || base >= BASE_SPLIT_MAX
+  $<HTMLButtonElement>('pg-faster').disabled = !session || base <= BASE_SPLIT_MIN
+}
+
+function adjustBaseSplit(delta: number) {
+  if (!session || session.phase === 'finished') return
+  const before = session.baseSplit
+  const applied = session.setBaseSplit(before + delta)
+  syncPaceButtons()
+  if (applied === before) return
+  raceTotal = session.projectedTotal()
+  hud.setTotal(raceTotal)
+  hud.pulseTarget()
+}
+
+$('pg-slower').addEventListener('click', () => adjustBaseSplit(BASE_SPLIT_STEP))
+$('pg-faster').addEventListener('click', () => adjustBaseSplit(-BASE_SPLIT_STEP))
 $('sim-intensity').addEventListener('input', e => {
   if (source instanceof MockSource) {
     source.intensity = Number((e.target as HTMLInputElement).value) / 100
@@ -597,6 +710,21 @@ function updateHud(dt: number) {
 
   // 숫자·게이지·코스 띠·미니맵
   hud.update(m, session.stroke, session.phase === 'running', dt)
+
+  // 기기 페이스가 거리와 어긋나 버린 순간을 진단 로그에 남긴다 — 다음에 "페이스가 안 나온다"는 보고가 오면 여기서 단위를 읽는다.
+  // 레이스 중 패널이 튀어나오지 않게 info로 남긴다 (warning은 패널을 연다).
+  if (m.paceDistrusted !== lastPaceDistrusted) {
+    lastPaceDistrusted = m.paceDistrusted
+    const raw = session.lastRaw
+    appendBleLog({
+      at: Date.now(), level: 'info',
+      code: m.paceDistrusted ? 'pace.distrusted' : 'pace.trusted',
+      message: m.paceDistrusted
+        ? '기기가 보고한 페이스·파워가 거리와 맞지 않아 거리로 계산한 속도를 씁니다.'
+        : '기기 페이스가 다시 거리와 맞아 그대로 씁니다.',
+      detail: raw ? `${describeRowerData(raw)} | 거리로 잰 속도 ${m.speed.toFixed(2)} m/s (${formatSplitShort(m.split)}/500m)` : undefined,
+    })
+  }
 
   // 구간이 바뀌면 소리로 알린다 — 화면을 안 봐도 되게
   if (lastStepLabel !== null && m.step.label !== lastStepLabel) {

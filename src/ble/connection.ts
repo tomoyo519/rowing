@@ -1,9 +1,12 @@
-import { FTMS_SERVICE, CHAR } from './ftms'
-import { parseRowerData, hexdump } from './rowerData'
+import { FTMS_SERVICE, CHAR, HEART_RATE_SERVICE } from './ftms'
+import { parseRowerData, hexdump, describeRowerData } from './rowerData'
+import { HEART_RATE_MEASUREMENT, parseHeartRateMeasurement } from './heartRate'
 import type { RowerSample, RowerSource, SourceStatus } from '../types'
 
 /** 원본 바이트를 콘솔에 찍어 실기기 페이로드를 검증하고 싶을 때 켠다. */
 export const DEBUG_RAW = false
+/** 이 간격(패킷 수)마다 파싱된 값을 진단 로그에 남긴다. 2Hz 기기면 1분. */
+export const PACKET_SAMPLE_EVERY = 120
 
 export type BleDiagnosticLevel = 'info' | 'success' | 'warning' | 'error'
 export type BleScanMode = 'ftms' | 'all'
@@ -108,6 +111,9 @@ export class FtmsSource implements RowerSource {
   private device: BluetoothDevice | null = null
   private char: BluetoothRemoteGATTCharacteristic | null = null
   private sampleFns = new Set<(s: RowerSample) => void>()
+  private heartRateFns = new Set<(bpm: number, at: number) => void>()
+  /** 로잉머신 자신이 노출한 심박 서비스(0x180D)의 측정 특성. 없으면 null */
+  private hrChar: BluetoothRemoteGATTCharacteristic | null = null
   private statusFns = new Set<(s: SourceStatus, d?: string) => void>()
   private diagnosticFns = new Set<(entry: BleDiagnosticEntry) => void>()
   private packetCount = 0
@@ -215,10 +221,12 @@ export class FtmsSource implements RowerSource {
         ? {
             acceptAllDevices: true,
             // 전체 검색에서는 선택 뒤 접근할 서비스를 반드시 optionalServices에 선언해야 한다.
-            optionalServices: [FTMS_SERVICE],
+            // 심박 서비스도 선언해 둔다 — 손잡이 센서나 짝지은 벨트의 심박을 FTMS가 아니라 따로 내보내는 로잉머신이 있다.
+            optionalServices: [FTMS_SERVICE, HEART_RATE_SERVICE],
           }
         : {
             filters: [{ services: [FTMS_SERVICE] }],
+            optionalServices: [HEART_RATE_SERVICE],
           }
       this.log(
         'info', 'chooser.invoke',
@@ -295,6 +303,7 @@ export class FtmsSource implements RowerSource {
       this.log('info', 'notifications.start', '로잉 데이터 알림 구독을 시작합니다.')
       await this.char.startNotifications()
       this.log('success', 'notifications.ok', '알림 구독을 시작했습니다. 첫 데이터를 기다립니다.')
+      await this.subscribeHeartRate(server)
       this.firstPacketTimer = window.setTimeout(() => {
         if (this.packetCount === 0 && this.status === 'connected') {
           this.log(
@@ -336,6 +345,8 @@ export class FtmsSource implements RowerSource {
         error instanceof Error ? `${error.name}: ${error.message}` : String(error),
       )
     }
+    this.hrChar?.removeEventListener('characteristicvaluechanged', this.handleHeartRate)
+    this.hrChar = null
     this.device?.removeEventListener('gattserverdisconnected', this.onDisconnected)
     this.device?.gatt?.disconnect()
     this.char = null
@@ -378,6 +389,7 @@ export class FtmsSource implements RowerSource {
       this.char = char
       char.addEventListener('characteristicvaluechanged', this.handleValue)
       await char.startNotifications()
+      await this.subscribeHeartRate(server)
 
       this.reconnectAttempts = 0
       this.setStatus('connected', this.device.name ?? undefined)
@@ -405,6 +417,44 @@ export class FtmsSource implements RowerSource {
     return () => this.statusFns.delete(fn)
   }
 
+  /** 로잉머신이 심박 서비스로 따로 보내는 심박. at은 샘플과 같은 performance.now() 기준 ms. */
+  onHeartRate(fn: (bpm: number, at: number) => void) {
+    this.heartRateFns.add(fn)
+    return () => this.heartRateFns.delete(fn)
+  }
+
+  /**
+   * 로잉머신 자신의 심박 서비스(0x180D)를 구독한다. 선택 항목이라 없거나 실패해도 연결은 계속한다.
+   * Rower Data에 심박 비트를 안 켜는 기기도 손잡이 센서·짝지은 벨트 값을 이쪽으로는 보내는 경우가 있다.
+   */
+  private async subscribeHeartRate(server: BluetoothRemoteGATTServer) {
+    this.hrChar?.removeEventListener('characteristicvaluechanged', this.handleHeartRate)
+    this.hrChar = null
+    try {
+      const service = await server.getPrimaryService(HEART_RATE_SERVICE)
+      const char = await service.getCharacteristic(HEART_RATE_MEASUREMENT)
+      char.addEventListener('characteristicvaluechanged', this.handleHeartRate)
+      await char.startNotifications()
+      this.hrChar = char
+      this.log('success', 'heart-rate.ok', '로잉머신의 심박 서비스(0x180D)를 구독했습니다.')
+    } catch (error) {
+      this.log(
+        'info', 'heart-rate.none',
+        '로잉머신에 별도 심박 서비스가 없습니다. 심박은 Rower Data 필드나 따로 연결한 심박 센서로 받습니다.',
+        formatNativeError(error),
+      )
+    }
+  }
+
+  private handleHeartRate = (ev: Event) => {
+    const view = (ev.target as BluetoothRemoteGATTCharacteristic).value
+    if (!view) return
+    const bpm = parseHeartRateMeasurement(view)
+    if (bpm === null) return
+    const at = performance.now()
+    for (const fn of this.heartRateFns) fn(bpm, at)
+  }
+
   onDiagnostic(fn: (entry: BleDiagnosticEntry) => void) {
     this.diagnosticFns.add(fn)
     return () => this.diagnosticFns.delete(fn)
@@ -418,12 +468,18 @@ export class FtmsSource implements RowerSource {
     const data = parseRowerData(view)
     this.packetCount += 1
     const flags = view.byteLength >= 2 ? `0x${view.getUint16(0, true).toString(16).padStart(4, '0')}` : '읽을 수 없음'
-    if (this.packetCount === 1) {
-      this.clearFirstPacketTimer()
+    if (this.packetCount === 1) this.clearFirstPacketTimer()
+    // 처음 몇 패킷과 그 뒤 주기적으로 값까지 남긴다 — "페이스·심박이 안 나온다"는 보고는 기기가 그 필드를
+    // 어떤 값으로 보내는지(0인지, 단위가 다른지, 분할 알림의 어느 쪽에 실리는지) 봐야만 풀린다.
+    // 분할 알림은 두 패킷이 번갈아 오므로 첫 셋을 다 남긴다. 120패킷(2Hz면 1분)마다 하나는 운동 중 값이다.
+    if (this.packetCount <= 3 || this.packetCount % PACKET_SAMPLE_EVERY === 0) {
       this.log(
-        'success', 'packet.first',
-        `첫 로잉 데이터를 받았습니다 (${view.byteLength} bytes).`,
-        `flags=${flags}, fields=${Object.keys(data).filter(key => key !== 'truncated').join(', ') || '없음'}`,
+        this.packetCount === 1 ? 'success' : 'info',
+        this.packetCount === 1 ? 'packet.first' : 'packet.sample',
+        this.packetCount === 1
+          ? `첫 로잉 데이터를 받았습니다 (${view.byteLength} bytes).`
+          : `로잉 데이터 #${this.packetCount} (${view.byteLength} bytes)`,
+        `flags=${flags} ${describeRowerData(data)} | raw=${hexdump(view)}`,
       )
     }
     if (data.truncated) {
@@ -431,8 +487,8 @@ export class FtmsSource implements RowerSource {
       if (this.packetCount === 1 || this.packetCount % 20 === 0) {
         this.log(
           'warning', 'packet.truncated',
-          '패킷 길이가 FTMS flags가 표시한 데이터보다 짧습니다.',
-          `received=${view.byteLength} bytes, flags=${flags}`,
+          '패킷 길이가 FTMS flags가 표시한 데이터보다 짧습니다. 잘린 뒤의 필드(심박 등)는 읽지 못합니다.',
+          `received=${view.byteLength} bytes, flags=${flags} ${describeRowerData(data)} | raw=${hexdump(view)}`,
         )
       }
       console.warn('[FTMS] 페이로드가 flags보다 짧습니다:', hexdump(view))
@@ -479,6 +535,8 @@ export class FtmsSource implements RowerSource {
     this.clearFirstPacketTimer()
     this.char?.removeEventListener('characteristicvaluechanged', this.handleValue)
     try { await this.char?.stopNotifications() } catch { /* 부분 연결 상태일 수 있다. */ }
+    this.hrChar?.removeEventListener('characteristicvaluechanged', this.handleHeartRate)
+    this.hrChar = null
     this.device?.removeEventListener('gattserverdisconnected', this.onDisconnected)
     this.device?.gatt?.disconnect()
     this.char = null

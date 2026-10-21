@@ -61,6 +61,34 @@ const PACE_MAX = 3000        // 50:00/500m — 이보다 느리면 정보가 아
 const POWER_MAX = 1500       // W — 스프린트 피크도 1200을 넘지 않는다
 /** 심박 필드가 이 시간보다 오래 빠지면 벨트가 끊긴 것으로 보고 숨긴다. */
 const HEART_RATE_STALE_MS = 10_000
+/**
+ * 거리로 잰 속도의 창 (ms). 정수 미터·2Hz 패킷은 한 쌍만 보면 ±50% 떨리므로 여러 패킷에 걸쳐 평균한다.
+ * 스트로크마다 한 번만 거리를 갱신하는 콘솔(저레이트 3.3초 주기)도 창 안에 한 번은 들어오게 잡았다.
+ */
+export const DISTANCE_WINDOW_MS = 3000
+/** 창이 최소 이만큼(ms)은 쌓여야 거리 속도를 쓴다. 그 전엔 직전 두 패킷으로 잰다. */
+const DISTANCE_WINDOW_MIN_MS = 1500
+/**
+ * 기기가 보고한 페이스(또는 파워로 환산한 속도)와 거리로 잰 속도가 이 배율보다 더 어긋나면 그 샘플은 '불일치'다.
+ * 한 스트로크 안의 순간 페이스 흔들림은 3초 평균과 1.3배 안에서 놀고, 단위가 틀린 펌웨어(0.1초 단위, 1km 기준 등)는 2배 넘게 어긋난다.
+ */
+export const PACE_MISMATCH_RATIO = 1.6
+/**
+ * 불일치가 (비교할 수 있었던 시간으로) 이만큼(ms) 이어지면 페이스·파워 필드를 버리고 거리로 잰 속도를 쓴다.
+ * 출발 가속은 창이 따라붙는 데 2~3초가 걸리므로 그보다 길어야 한다. 단위가 틀린 기기는 100% 어긋나서 금방 넘는다.
+ */
+export const PACE_DISTRUST_AFTER_MS = 6000
+/** 창 안에서 최소 이만큼(m, m/s)은 움직였을 때만 비교한다 — 관성으로 도는 플라이휠과 정지는 비교 대상이 아니다. */
+const PACE_CHECK_MIN_METERS = 4
+const PACE_CHECK_MIN_SPEED = 1.0
+/** 레이스 중 바꿀 수 있는 기준 스플릿의 범위 (초/500m) */
+export const BASE_SPLIT_MIN = 90
+export const BASE_SPLIT_MAX = 240
+/** 레이스 중 목표 페이스를 한 번에 옮기는 폭 (초/500m) */
+export const BASE_SPLIT_STEP = 5
+
+/** 지금 속도를 어디서 얻었는지. 'distance'면 기기 페이스가 없거나 믿을 수 없어 거리 증가분으로 잰 것이다. */
+export type SpeedSource = 'pace' | 'power' | 'distance' | 'none'
 
 export interface Metrics {
   distance: number
@@ -103,6 +131,10 @@ export interface Metrics {
   ghostDistance: number | null
   /** 고스트 대비 거리차 (m). +면 앞서는 중. 기록이 없으면 null */
   ghostGap: number | null
+  /** 마지막으로 속도를 새로 얻은 출처 */
+  speedSource: SpeedSource
+  /** 기기 페이스·파워가 거리와 계속 어긋나 버리고 있는지 (단위가 틀린 펌웨어) */
+  paceDistrusted: boolean
 }
 
 export type StallReason = null | 'link' | 'nodata'
@@ -157,6 +189,18 @@ export class Session {
   paceSpeed = 0
   /** 거리가 멈춰 정지로 확정된 뒤, 새 이동 증거가 올 때까지 붙든 페이스 값을 무시한다. */
   private stoppedForStagnation = false
+  /** 최근 DISTANCE_WINDOW_MS 동안 거리를 실은 샘플. 거리 속도와 페이스 검증에 쓴다. */
+  private distanceLog: { at: number; d: number }[] = []
+  /** 거리를 가로지른 창 속도 — 이번 샘플 기준. 거리를 안 주거나 창이 짧으면 null */
+  private windowSpeed: number | null = null
+  /** 비교할 수 있었던 샘플들 사이에서만 쌓는 불일치/일치 누적 시간 (ms) */
+  private paceMismatchMs = 0
+  private paceAgreeMs = 0
+  private lastPaceCheckAt: number | null = null
+  private paceDistrusted = false
+  private speedSource: SpeedSource = 'none'
+  /** 로잉머신과 별개로 연결한 심박 센서의 마지막 값. 기기 FTMS 심박보다 우선한다. */
+  private externalHeartRate: { bpm: number; at: number } | null = null
 
   constructor(
     public course: Course,
@@ -187,6 +231,87 @@ export class Session {
     // 출발선에서 곧바로 목표 속도. 대기(armed) 중에는 update()가 거리를 쌓지 않으니 미리 둬도 된다.
     this.paceSpeed = this.paceTarget()
     this.stoppedForStagnation = false
+    // 페이스 신뢰 판정(paceDistrusted)은 기기에 대한 지식이라 지우지 않는다 — 카운트다운 중 들어온 샘플로 이미 판정돼 있을 수 있다.
+    this.speedSource = 'none'
+  }
+
+  /**
+   * 레이스 중 목표 페이스를 바꾼다. 구간 강도는 그대로 곱해지고, 페이스 보트는 관성(PACE_INERTIA_SEC)으로 새 속도에 붙는다.
+   * 범위 밖이면 잘라낸다. 실제 적용된 값을 돌려준다.
+   */
+  setBaseSplit(split: number): number {
+    const clamped = Math.min(BASE_SPLIT_MAX, Math.max(BASE_SPLIT_MIN, Math.round(split)))
+    this.baseSplit = clamped
+    return clamped
+  }
+
+  /**
+   * 페이스 보트가 코스를 마칠 때 가 있을 거리 (m) — 지금까지 간 거리 + 남은 시간을 지금 기준 스플릿으로 달린 거리.
+   * 출발 전엔 코스 선택 화면의 예상 거리와 같다. 목표 페이스를 바꾸면 결승선이 여기로 옮겨진다.
+   */
+  projectedTotal(): number {
+    const left = Math.max(0, this.course.durationSec - this.elapsed)
+    if (left <= 0) return this.paceDistance
+    const mean = meanIntensityBetween(this.course.profile, this.elapsed, this.course.durationSec)
+    return this.paceDistance + splitToSpeed(this.baseSplit) * mean * left
+  }
+
+  /** 따로 연결한 심박 센서의 값. at은 샘플과 같은 performance.now() 기준 ms. */
+  setExternalHeartRate(bpm: number, at: number) {
+    this.externalHeartRate = bpm > 0 ? { bpm, at } : null
+  }
+
+  /** 마지막으로 받은 원본 샘플 — 진단 로그용 */
+  get lastRaw(): RowerSample | null { return this.lastSample }
+
+  /**
+   * 최근 4초 창의 거리 증가분 / 시간 (m/s). 이번 샘플을 창에 넣고 계산한다.
+   * 거리를 안 주는 샘플이면 창은 그대로 두고 null. 창이 1.5초보다 짧아도 null.
+   * 콘솔이 거리를 되돌리면(새 운동) 창을 비운다.
+   */
+  private windowedDistanceSpeed(s: RowerSample): number | null {
+    const d = s.totalDistance
+    if (d === undefined) return null
+    const log = this.distanceLog
+    const last = log[log.length - 1]
+    if (last && (d < last.d - 5 || s.at < last.at)) log.length = 0
+    log.push({ at: s.at, d })
+    // 창보다 오래된 샘플은 버리되, 창의 바깥 경계 하나는 남겨 창이 늘 4초 가까이 되게 한다
+    while (log.length > 2 && s.at - log[1]!.at >= DISTANCE_WINDOW_MS) log.shift()
+    const first = log[0]!
+    const span = (s.at - first.at) / 1000
+    if (span * 1000 < DISTANCE_WINDOW_MIN_MS) return null
+    return (d - first.d) / span
+  }
+
+  /**
+   * 기기가 보고한 속도를 거리와 대조한다. 페이스를 0.1초 단위나 1km 기준으로 보내는 펌웨어는
+   * 모든 값이 범위 안에 들어 그럴듯해 보이지만 거리와는 몇 배씩 어긋난다. 그런 기기는
+   * 스플릿이 영영 '--:--'로 남거나 페이스 보트가 멀리 사라지므로, 어긋남이 충분히 오래 이어지면
+   * 페이스 대신 거리로 잰 속도를 쓴다. 다시 맞아 들어가면 같은 시간을 두고 되돌린다.
+   */
+  private checkPaceTrust(s: RowerSample, reported: number | null) {
+    const windowed = this.windowSpeed
+    const first = this.distanceLog[0]
+    const moved = first && s.totalDistance !== undefined ? s.totalDistance - first.d : 0
+    if (reported === null || windowed === null || windowed < PACE_CHECK_MIN_SPEED || moved < PACE_CHECK_MIN_METERS) {
+      // 비교할 수 없는 샘플(거리 없음, 정지, 관성) — 시간을 쌓지도 않고 누적을 지우지도 않는다.
+      // 멈췄다 다시 저을 때의 감속·가속 불일치는 이렇게 둘로 나뉘어 각각 몇 초에 그치고, 사이에 한 번만 맞으면 지워진다.
+      this.lastPaceCheckAt = null
+      return
+    }
+    const dt = this.lastPaceCheckAt === null ? 0 : s.at - this.lastPaceCheckAt
+    this.lastPaceCheckAt = s.at
+    const ratio = reported / windowed
+    if (ratio > PACE_MISMATCH_RATIO || ratio < 1 / PACE_MISMATCH_RATIO) {
+      this.paceAgreeMs = 0
+      this.paceMismatchMs += dt
+      if (!this.paceDistrusted && this.paceMismatchMs >= PACE_DISTRUST_AFTER_MS) this.paceDistrusted = true
+    } else {
+      this.paceMismatchMs = 0
+      this.paceAgreeMs += dt
+      if (this.paceDistrusted && this.paceAgreeMs >= PACE_DISTRUST_AFTER_MS) this.paceDistrusted = false
+    }
   }
 
   /**
@@ -361,7 +486,10 @@ export class Session {
       && this.lastDistanceValue !== null && s.totalDistance > this.lastDistanceValue
     // 페이스도 파워도 안 실어 주는(또는 못 믿을 값만 주는) 기기용 예비 속도: 거리 증가분 / 경과 시간.
     // 거리가 늘었는데 속도가 0이면 배는 패킷마다 끌려가듯 움직이고 스플릿·게이지는 텅 빈다.
-    const distanceSpeed = distanceChanged ? this.speedFromDistance(s) : null
+    // 창(4초)이 쌓이기 전엔 직전 두 패킷으로, 쌓인 뒤엔 창 평균으로 잰다 — 정수 미터 양자화 떨림을 누른다.
+    this.windowSpeed = this.windowedDistanceSpeed(s)
+    const pairwiseSpeed = distanceChanged ? this.speedFromDistance(s) : null
+    const distanceSpeed = distanceChanged ? (this.windowSpeed ?? pairwiseSpeed) : null
     if (strokeAdvanced || distanceAdvanced) {
       this.zeroSince = null
       this.stoppedForStagnation = false
@@ -378,6 +506,7 @@ export class Session {
     }
 
     const reported = this.sampleSpeed(s)
+    this.checkPaceTrust(s, reported)
     if (
       this.stoppedForStagnation && reported !== null && this.lastReportedSpeed !== null
       && reported > this.lastReportedSpeed + START_ACCEL
@@ -388,12 +517,14 @@ export class Session {
     }
     let speed: number
     let explicitlyStopped = false
-    if (reported !== null) {
+    if (reported !== null && !this.paceDistrusted) {
       speed = reported
       this.zeroSince = null
+      this.speedSource = s.instantaneousPace !== undefined && s.instantaneousPace >= PACE_MIN && s.instantaneousPace <= PACE_MAX ? 'pace' : 'power'
     } else if (distanceSpeed !== null) {
       speed = distanceSpeed
       this.zeroSince = null
+      this.speedSource = 'distance'
     } else if (this.reportsZero(s) && !strokeAdvanced && !distanceAdvanced) {
       // 기기가 명시적으로 "0"이라고 말했다. 충분히 오래 이어지면 정말 멈춘 것이다.
       // 예전엔 이 경우 마지막 속도를 그대로 유지해서 노를 놓아도 배가 영원히 미끄러졌다.
@@ -530,10 +661,7 @@ export class Session {
       spm: this.stroke.spm,
       power: this.lastPower,
       strokeCount: sc !== undefined && this.startStrokeCount !== null ? sc - this.startStrokeCount : 0,
-      heartRate: this.lastHeartRateAt !== undefined
-        && (this.lastSample?.at ?? this.lastHeartRateAt) - this.lastHeartRateAt <= HEART_RATE_STALE_MS
-        ? this.lastHeartRate
-        : undefined,
+      heartRate: this.heartRate(),
       calories: this.lastSample?.totalEnergy,
       gap: d - this.paceDistance,
       paceSpeed: this.paceSpeed,
@@ -554,6 +682,22 @@ export class Session {
       stallReason: this.stallReason,
       ghostDistance,
       ghostGap: ghostDistance === null ? null : d - ghostDistance,
+      speedSource: this.speedSource,
+      paceDistrusted: this.paceDistrusted,
     }
+  }
+
+  /**
+   * 심박: 따로 연결한 센서가 있으면 그 값, 없으면 로잉머신 FTMS 필드.
+   * 둘 다 마지막 샘플 시각 기준으로 HEART_RATE_STALE_MS 안에 들어온 값만 쓴다 — 벨트가 빠지면 숫자가 굳지 않고 사라진다.
+   */
+  private heartRate(): number | undefined {
+    const now = this.lastSample?.at
+    const external = this.externalHeartRate
+    if (external && (now === undefined || now - external.at <= HEART_RATE_STALE_MS)) return external.bpm
+    if (this.lastHeartRateAt !== undefined && (now ?? this.lastHeartRateAt) - this.lastHeartRateAt <= HEART_RATE_STALE_MS) {
+      return this.lastHeartRate
+    }
+    return undefined
   }
 }

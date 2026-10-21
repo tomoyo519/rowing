@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { diagnoseBluetoothError, FtmsSource } from './connection'
-import { CHAR, FTMS_SERVICE } from './ftms'
+import { CHAR, FTMS_SERVICE, HEART_RATE_SERVICE } from './ftms'
+import { HEART_RATE_MEASUREMENT } from './heartRate'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -23,12 +24,23 @@ function stubBrowser(requestDevice: (options?: RequestDeviceOptions) => Promise<
   })
 }
 
-function successfulDevice(featureFails = false) {
+function successfulDevice(featureFails = false, heartRateService = false) {
   const rower = new EventTarget() as BluetoothRemoteGATTCharacteristic
   Object.assign(rower, {
     startNotifications: vi.fn(async () => rower),
     stopNotifications: vi.fn(async () => rower),
   })
+  const hr = new EventTarget() as BluetoothRemoteGATTCharacteristic
+  Object.assign(hr, {
+    startNotifications: vi.fn(async () => hr),
+    stopNotifications: vi.fn(async () => hr),
+  })
+  const hrService = {
+    getCharacteristic: vi.fn(async (uuid: BluetoothCharacteristicUUID) => {
+      if (uuid !== HEART_RATE_MEASUREMENT) throw new DOMException('no such characteristic', 'NotFoundError')
+      return hr
+    }),
+  }
   const feature = {
     readValue: vi.fn(async () => new DataView(new Uint8Array([1, 2, 3, 4]).buffer)),
   }
@@ -42,7 +54,13 @@ function successfulDevice(featureFails = false) {
     }),
   }
   const server = {
-    getPrimaryService: vi.fn(async () => service as unknown as BluetoothRemoteGATTService),
+    getPrimaryService: vi.fn(async (uuid: BluetoothServiceUUID) => {
+      if (uuid === HEART_RATE_SERVICE) {
+        if (!heartRateService) throw new DOMException('no heart rate service', 'NotFoundError')
+        return hrService as unknown as BluetoothRemoteGATTService
+      }
+      return service as unknown as BluetoothRemoteGATTService
+    }),
   }
   const target = new EventTarget()
   const device = target as BluetoothDevice
@@ -54,7 +72,7 @@ function successfulDevice(featureFails = false) {
       disconnect: vi.fn(),
     },
   })
-  return { device, rower }
+  return { device, rower, hr }
 }
 
 describe('Bluetooth 오류 진단', () => {
@@ -107,10 +125,11 @@ describe('Bluetooth 오류 진단', () => {
       'service.ftms.start', 'service.ftms.ok',
       'feature.read.start', 'feature.read.ok',
       'rower-char.start', 'rower-char.ok',
-      'notifications.start', 'notifications.ok', 'connected',
+      'notifications.start', 'notifications.ok', 'heart-rate.none', 'connected',
     ])
     expect(requestDevice).toHaveBeenCalledWith({
       filters: [{ services: [FTMS_SERVICE] }],
+      optionalServices: [HEART_RATE_SERVICE],
     })
     expect(source.status).toBe('connected')
     await source.disconnect()
@@ -128,9 +147,31 @@ describe('Bluetooth 오류 진단', () => {
 
     expect(requestDevice).toHaveBeenCalledWith({
       acceptAllDevices: true,
-      optionalServices: [FTMS_SERVICE],
+      optionalServices: [FTMS_SERVICE, HEART_RATE_SERVICE],
     })
     expect(codes).toContain('chooser.request.all')
+    await source.disconnect()
+  })
+
+  it('로잉머신이 심박 서비스를 따로 내보내면 구독해 심박을 전달한다', async () => {
+    const { device, hr } = successfulDevice(false, true)
+    stubBrowser(vi.fn(async () => device))
+    const source = new FtmsSource()
+    const codes: string[] = []
+    const beats: number[] = []
+    source.onDiagnostic(entry => codes.push(entry.code))
+    source.onHeartRate(bpm => beats.push(bpm))
+
+    await source.connect()
+    expect(codes).toContain('heart-rate.ok')
+    expect(hr.startNotifications).toHaveBeenCalled()
+
+    Object.defineProperty(hr, 'value', { value: new DataView(new Uint8Array([0x00, 142]).buffer), configurable: true })
+    hr.dispatchEvent(new Event('characteristicvaluechanged'))
+    // 0은 "아직 못 잼"이라 전달하지 않는다
+    Object.defineProperty(hr, 'value', { value: new DataView(new Uint8Array([0x00, 0]).buffer), configurable: true })
+    hr.dispatchEvent(new Event('characteristicvaluechanged'))
+    expect(beats).toEqual([142])
     await source.disconnect()
   })
 
