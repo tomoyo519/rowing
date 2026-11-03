@@ -111,6 +111,8 @@
   }
   .ble-log-title { font-size: 13px; font-weight: 750; }
   .ble-log-state { font-size: 11px; color: var(--muted); }
+  /* 어떤 빌드가 떠 있는지 화면에서 바로 읽는다 — "고쳤는데 그대로" 보고의 첫 확인 항목 */
+  .build-stamp { font-size: 11px; color: var(--muted); margin: -2px 0 10px; font-variant-numeric: tabular-nums; }
   .ble-log-actions { display: flex; gap: 6px; margin-left: auto; }
   .ble-mini-btn {
     pointer-events: auto; padding: 6px 9px; border: 1px solid var(--line);
@@ -704,6 +706,7 @@
   <div class="pad">
     <h1>makeRowing</h1>
     <p class="sub">FTMS 로잉머신을 연결하고 코스를 저어보세요.</p>
+    <div class="build-stamp" id="build-stamp" aria-label="빌드 버전"></div>
     <button id="btn-ble" class="btn">로잉머신 연결</button>
     <div style="height:10px"></div>
     <button id="btn-ble-all" class="btn ghost">주변 Bluetooth 기기 전체 보기</button>
@@ -901,7 +904,7 @@
 <section class="ble-log" id="ble-log-panel" hidden aria-live="polite" aria-label="Bluetooth 연결 진단 로그">
   <div class="ble-log-head">
     <div>
-      <div class="ble-log-title">Bluetooth 연결 진단 · 숫자는 오류번호가 아닌 기록 개수입니다</div>
+      <div class="ble-log-title">Bluetooth 연결 진단 · 숫자는 오류번호가 아닌 기록 개수입니다 · 빌드 <span id="ble-log-build"></span></div>
       <div class="ble-log-state" id="ble-log-state">연결 단계가 여기에 표시됩니다</div>
     </div>
     <div class="ble-log-actions">

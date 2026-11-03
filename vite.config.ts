@@ -1,6 +1,20 @@
 import { cloudflare } from '@cloudflare/vite-plugin'
 import { sites } from '@openai/sites-vite-plugin'
 import { defineConfig } from 'vite'
+import { execSync } from 'node:child_process'
+
+/**
+ * 빌드 식별자: 커밋 짧은 해시 + 빌드 일시(KST). 화면 구석과 연결 로그에 찍어 "반영 안 됨" 보고 때
+ * 어떤 빌드가 떠 있는지 바로 알 수 있게 한다. Vercel은 얕은 clone이라 환경변수를 먼저 본다.
+ */
+function buildStamp(): string {
+  let sha = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7)
+  if (!sha) {
+    try { sha = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() } catch { sha = 'local' }
+  }
+  const at = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16)
+  return `${sha} ${at}`
+}
 
 export default defineConfig({
   plugins: [
@@ -29,4 +43,5 @@ export default defineConfig({
     allowedHosts: ['.trycloudflare.com', '.ngrok-free.app', '.ngrok.io', '.loca.lt'],
   },
   build: { target: 'es2022' },
+  define: { __BUILD__: JSON.stringify(buildStamp()) },
 })

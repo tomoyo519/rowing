@@ -24,6 +24,11 @@ import { createCoursePath, type CoursePath } from './game/coursePath'
 import type { RowerSource } from './types'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
+
+/** 빌드 식별자(커밋 해시·빌드 일시). 화면과 복사 로그에 함께 찍어 보고가 어느 빌드인지 바로 가린다 */
+const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev'
+$('build-stamp').textContent = `빌드 ${BUILD}`
+$('ble-log-build').textContent = BUILD
 const show = (id: string) => {
   for (const s of document.querySelectorAll('.screen')) s.classList.remove('active')
   $(id).classList.add('active')
@@ -96,12 +101,12 @@ function appendBleLog(entry: BleDiagnosticEntry) {
 }
 
 function bleLogText() {
-  return bleLog.map(entry => {
+  return [`build ${BUILD} ${navigator.userAgent}`, ...bleLog.map(entry => {
     const at = new Date(entry.at).toISOString()
     const error = entry.errorName ? ` ${entry.errorName}` : ''
     const detail = entry.detail ? `\n  ${entry.detail}` : ''
     return `[${at}] ${entry.level.toUpperCase()} ${entry.code}${error}\n  ${entry.message}${detail}`
-  }).join('\n')
+  })].join('\n')
 }
 
 $('btn-log-copy').addEventListener('click', async () => {
