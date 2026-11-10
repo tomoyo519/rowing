@@ -28,11 +28,12 @@ import { SHARK_BITE_REACH } from '../game/modes'
 /** 상대 보트·상어는 내 보트에서 이 거리(m) 안에 있을 때만 그린다 */
 const ACTOR_VISIBLE_M = 90
 /**
- * 뒤 보기(상어 모드) 카메라가 보는 레이어. 반사 레이어(1)와 겹치지 않게 2.
- * 추격 카메라는 앞만 보므로 뒤에서 오는 상어는 물릴 때까지 안 보인다 — 뱃머리 위에서 뒤를 보는
- * 작은 뷰포트를 화면 위에 하나 더 그린다. 하늘·물·강둑·내 보트·상어만 그려서 싸다.
+ * 상어 시점(상어 모드) 카메라가 보는 레이어. 반사 레이어(1)와 겹치지 않게 2.
+ * 추격 카메라는 앞만 보므로 뒤에서 오는 상어는 물릴 때까지 안 보인다 — 가로 화면에서는 왼쪽 절반,
+ * 세로 화면에서는 위쪽 띠에 상어 뒤를 따라가는 카메라를 하나 더 그린다.
+ * 하늘·물·강둑·나무·언덕·구름·내 보트·상어만 그려서 응원객·소품·랜드마크 몫의 드로우콜을 아낀다.
  */
-const REAR_LAYER = 2
+const SHARK_VIEW_LAYER = 2
 
 interface ViewportRect { x: number; y: number; w: number; h: number }
 
@@ -130,11 +131,16 @@ export class View {
   private shark: Shark | null = null
   /** 마지막으로 본 물린 횟수 — 늘어나면 무는 연출을 시작한다 */
   private sharkCaught = 0
-  /** 뒤 보기 카메라 (상어 모드). 뱃머리 위에서 선미 너머를 본다 */
-  private rearCamera: THREE.PerspectiveCamera | null = null
-  /** 뒤 보기를 그릴 화면 영역 (CSS px, 좌상단 기준). HUD의 틀 요소를 재서 정한다 */
-  private rearRect: ViewportRect | null = null
-  private rearFrame: HTMLElement | null = null
+  /** 상어 시점 카메라 (상어 모드). 상어 뒤에서 상어와 그 앞의 내 보트를 본다 */
+  private sharkCamera: THREE.PerspectiveCamera | null = null
+  /** 상어 시점을 그릴 화면 영역 (CSS px, 좌상단 기준). HUD의 틀 요소를 재서 정한다 */
+  private sharkRect: ViewportRect | null = null
+  private sharkFrame: HTMLElement | null = null
+  /**
+   * 메인 카메라가 차지하는 영역. 가로 화면의 좌우 분할에서는 오른쪽 절반이고,
+   * null이면 캔버스 전체다 (세로 화면에서는 상어 시점이 위쪽 띠로 덮일 뿐이다).
+   */
+  private mainRect: ViewportRect | null = null
   /**
    * 추월 레이스의 라이벌 두 벌. 추월하면 지나간 배는 제 속도로 뒤로 멀어지고
    * 다른 벌이 새 라이벌로 앞에 선다 — 한 벌로 순간이동시키면 눈에 띈다.
@@ -200,15 +206,13 @@ export class View {
     } else if (session.mode === 'shark') {
       this.shark = new Shark()
       this.world.scene.add(this.shark.group)
-      // 뒤 보기: 뱃머리 위에서 선미 너머를 본다. 로어는 선미를 보고 앉으니 얼굴이, 그 뒤로 상어가 보인다.
-      // 화각을 좁혀 당겨 본다 — 작은 창에서 14m 뒤 지느러미가 점이 되지 않게. 먼 평면은 하늘 돔(반지름 400)을 넘겨야 한다
-      this.rearCamera = new THREE.PerspectiveCamera(26, 2, 0.1, 700)
-      this.rearCamera.position.set(4.2, 2.6, 0)
-      this.rearCamera.lookAt(-18, -0.4, 0)
-      this.rearCamera.layers.set(REAR_LAYER)
-      this.world.enableLayer(REAR_LAYER)
-      enableLayer(this.player.group, REAR_LAYER)
-      enableLayer(this.shark.group, REAR_LAYER)
+      // 상어 시점: 상어 뒤 위에서 상어와 그 앞의 내 보트를 함께 본다. 자리는 render()에서 매 프레임 상어를 따라간다.
+      // 먼 평면은 하늘 돔(반지름 400)을 넘겨야 한다
+      this.sharkCamera = new THREE.PerspectiveCamera(48, 1, 0.1, 700)
+      this.sharkCamera.layers.set(SHARK_VIEW_LAYER)
+      this.world.enableLayer(SHARK_VIEW_LAYER)
+      enableLayer(this.player.group, SHARK_VIEW_LAYER)
+      enableLayer(this.shark.group, SHARK_VIEW_LAYER)
     } else if (session.mode === 'chase') {
       // 라이벌은 체형도 번갈아 다르다 — 추월할 때마다 다른 사람이 나타난다
       for (let i = 0; i < 2; i++) {
@@ -241,6 +245,7 @@ export class View {
     if (this.ghost) markReflective(this.ghost.group)
     if (this.shark) markReflective(this.shark.group)
     for (const rival of this.rivals) markReflective(rival.group)
+    if (this.ghost && this.sharkCamera) enableLayer(this.ghost.group, SHARK_VIEW_LAYER)
     applyAnisotropy(this.renderer)
     this.applyQuality(this.quality)
   }
@@ -290,47 +295,82 @@ export class View {
     this.renderer.setSize(w, h, false)
     this.composer?.setSize(w, h)
     this.reflection.resize(this.renderer)
-    this.camera.aspect = w / h
-    const cam = CAMERAS[this.camIndex]!
-    // 세로 화면에서는 화각을 넓혀 보트가 잘리지 않게 한다
-    this.camera.fov = w / h < 1 ? cam.fovPortrait : cam.fov
-    this.camera.updateProjectionMatrix()
-    this.measureRearView()
+    this.measureViews(w, h)
   }
 
   /**
-   * 뒤 보기를 그릴 자리를 HUD 틀 요소로 알려준다 (상어 모드가 아니면 무시된다).
+   * 상어 시점을 그릴 자리를 HUD 틀 요소로 알려준다 (상어 모드가 아니면 무시된다).
    * 캔버스가 화면 전체를 덮으므로 요소의 화면 좌표가 곧 캔버스 좌표다.
    */
-  attachRearView(frame: HTMLElement | null) {
-    this.rearFrame = frame
-    this.measureRearView()
+  attachSharkView(frame: HTMLElement | null) {
+    this.sharkFrame = frame
+    const c = this.renderer.domElement
+    this.measureViews(c.clientWidth || 1, c.clientHeight || 1)
   }
 
-  private measureRearView() {
-    if (!this.rearCamera || !this.rearFrame) { this.rearRect = null; return }
-    const r = this.rearFrame.getBoundingClientRect()
-    if (r.width < 8 || r.height < 8) { this.rearRect = null; return }
-    // 틀의 테두리 안쪽에 그린다
-    const inset = 2
-    this.rearRect = { x: r.left + inset, y: r.top + inset, w: r.width - inset * 2, h: r.height - inset * 2 }
-    this.rearCamera.aspect = this.rearRect.w / this.rearRect.h
-    this.rearCamera.updateProjectionMatrix()
+  /**
+   * 메인 카메라와 상어 시점 카메라의 화면 영역을 정한다.
+   *
+   * 상어 시점 틀이 캔버스 높이를 거의 다 차지하면(가로 화면) 좌우 분할이다 — 메인 카메라는 나머지 오른쪽을 맡는다.
+   * 메인 렌더(반사·블룸·SMAA 체인)는 캔버스 전체에 그대로 그리되, setViewOffset으로 투영을 옮겨
+   * 오른쪽 영역에 '그 영역 비율의 카메라가 본 그림'이 정확히 들어오게 한다. 왼쪽에 그려진 것은 상어 시점이 덮는다.
+   * 그렇지 않으면(세로 화면의 위쪽 띠) 메인은 캔버스 전체고 띠만 덮어 그린다.
+   */
+  private measureViews(w: number, h: number) {
+    const cam = CAMERAS[this.camIndex]!
+    this.sharkRect = null
+    this.mainRect = null
+    if (this.sharkCamera && this.sharkFrame) {
+      const r = this.sharkFrame.getBoundingClientRect()
+      if (r.width >= 8 && r.height >= 8) {
+        // 틀의 테두리(2px) 안쪽에 그린다
+        const inset = 2
+        this.sharkRect = { x: r.left + inset, y: r.top + inset, w: r.width - inset * 2, h: r.height - inset * 2 }
+        const sideBySide = r.height >= h * 0.9
+        if (sideBySide) {
+          const x = r.left + r.width
+          this.mainRect = { x, y: 0, w: Math.max(1, w - x), h }
+        }
+        this.sharkCamera.aspect = this.sharkRect.w / this.sharkRect.h
+        this.sharkCamera.fov = this.sharkCamera.aspect < 1 ? 62 : 44
+        this.sharkCamera.updateProjectionMatrix()
+      }
+    }
+    if (this.mainRect) {
+      const m = this.mainRect
+      this.camera.aspect = m.w / m.h
+      this.camera.setViewOffset(m.w, m.h, -m.x, -m.y, w, h)
+    } else {
+      this.camera.aspect = w / h
+      this.camera.clearViewOffset()
+    }
+    // 세로(또는 반쪽) 화면에서는 화각을 넓혀 보트가 잘리지 않게 한다
+    this.camera.fov = this.camera.aspect < 1 ? cam.fovPortrait : cam.fov
+    this.camera.updateProjectionMatrix()
   }
 
-  /** 뒤 보기 — 메인 렌더 뒤에 작은 뷰포트로 한 번 더 그린다. 평면 반사는 메인 카메라 기준이라 여기선 끈다 */
-  private renderRearView() {
-    if (!this.rearCamera || !this.rearRect) return
+  /** 상어 시점 카메라를 상어 뒤 위에 둔다 — 상어가 앞에, 내 보트가 그 너머에 들어온다 */
+  private placeSharkCamera() {
+    if (!this.sharkCamera || !this.shark) return
+    const s = this.shark.group.position
+    // 상어가 내 보트 쪽(원점)으로 가는 방향이 +X다. 옆으로 조금 비켜서 지느러미가 날로 보이지 않게 한다
+    this.sharkCamera.position.set(s.x - 9.5, 3.4, s.z + 2.6)
+    this.sharkCamera.lookAt(s.x + 9, 0.2, s.z * 0.5)
+  }
+
+  /** 상어 시점 — 메인 렌더 뒤에 왼쪽 절반(또는 위쪽 띠)에 한 번 더 그린다. 평면 반사는 메인 카메라 기준이라 여기선 끈다 */
+  private renderSharkView() {
+    if (!this.sharkCamera || !this.sharkRect) return
     const renderer = this.renderer
     const size = renderer.getSize(new THREE.Vector2())
-    const { x, y, w, h } = this.rearRect
+    const { x, y, w, h } = this.sharkRect
     // WebGL 뷰포트 원점은 좌하단
     const vy = size.y - y - h
     renderer.setScissorTest(true)
     renderer.setScissor(x, vy, w, h)
     renderer.setViewport(x, vy, w, h)
     this.world.water.setReflection(null)
-    renderer.render(this.world.scene, this.rearCamera)
+    renderer.render(this.world.scene, this.sharkCamera)
     this.world.water.setReflection(this.reflection.enabled ? this.reflection : null)
     renderer.setScissorTest(false)
     renderer.setViewport(0, 0, size.x, size.y)
@@ -384,6 +424,7 @@ export class View {
       this.shark.group.rotation.y = -point.yaw
       this.shark.group.visible = sv.gap < ACTOR_VISIBLE_M
       if (this.shark.group.visible) zs.push(this.shark.group.position.z)
+      this.placeSharkCamera()
     }
 
     // ── 라이벌 (추월 레이스) ─────────────────────────────────
@@ -497,7 +538,7 @@ export class View {
     this.reflection.render(this.renderer, this.world.scene, this.camera)
     if (this.composer) this.composer.render(dt)
     else this.renderer.render(this.world.scene, this.camera)
-    this.renderRearView()
+    this.renderSharkView()
   }
 
   /** 다음 카메라 프리셋으로. 이름을 돌려준다. */

@@ -19,6 +19,7 @@ import { formatSplit, formatSplitShort, formatClock } from './game/physics'
 import { RowingMetronome } from './audio/metronome'
 import { AudioCues } from './audio/cues'
 import { AMBIENT_AUDIO_ATTRIBUTION_URL, AmbientSoundscape } from './audio/ambience'
+import { SharkScore } from './audio/sharkScore'
 import { loadGhost } from './game/ghost'
 import { createCoursePath, type CoursePath } from './game/coursePath'
 import { GAME_MODES, gameModeById, josa, type GameModeId, type ModeEvent } from './game/modes'
@@ -498,6 +499,8 @@ const feedbackModal = new FeedbackModal()
 const metronome = new RowingMetronome()
 const cues = new AudioCues(metronome)
 const ambience = new AmbientSoundscape(metronome)
+/** 상어 추격 모드의 배경 음악 — 달리는 동안 켜지고 요약·종료·화면 이탈에서 멈춘다 */
+const sharkScore = new SharkScore(metronome)
 const hud = new RaceHud()
 let racePath: CoursePath = createCoursePath(selectedCourse.id)
 let raceTotal = 1
@@ -588,11 +591,13 @@ async function startRace() {
   hud.start(selectedCourse, racePath, raceTotal, ghost !== null, selectedMode)
   view?.dispose()
   view = new View(cv, session, avatarBody)
-  // 상어 모드에서만 뒤 보기 틀을 보이고 그 자리에 3D를 한 번 더 그린다
-  $('rear-view').classList.toggle('on', selectedMode === 'shark')
-  view.attachRearView(selectedMode === 'shark' ? $('rear-view') : null)
+  // 상어 모드에서만 화면을 나눈다 — 가로는 왼쪽 절반, 세로는 위쪽 띠가 상어 시점. HUD는 .split로 오른쪽에 모인다
+  const split = selectedMode === 'shark'
+  $('shark-view').classList.toggle('on', split)
+  $('hud').classList.toggle('split', split)
+  view.attachSharkView(split ? $('shark-view') : null)
   view.resize()
-  if (import.meta.env.DEV) (window as unknown as { __rowing: unknown }).__rowing = { session, view }
+  if (import.meta.env.DEV) (window as unknown as { __rowing: unknown }).__rowing = { session, view, metronome, sharkScore }
 
   // 화면 잠금 요청이 늦게 끝나는 동안에도 ✕로 나갈 수 있다. await 전에 이 세션을 잡아 둬야
   // 종료된 화면 위에 카운트다운을 띄우거나 null 세션을 건드리지 않는다.
@@ -669,6 +674,7 @@ async function runCountdown(generation: number) {
 $('btn-quit').addEventListener('click', () => {
   metronome.stop()
   ambience.stop()
+  sharkScore.stop()
   // 카운트다운 중이었다면 남은 숫자와 '시작' 소리를 끊는다
   countdownGeneration++
   hideCountdown()
@@ -857,9 +863,9 @@ function updateHud(dt: number) {
   if (lastPhase === 'armed' && session.phase === 'running') cues.launch()
   lastPhase = session.phase
 
-  // 모드 사건: 상어 경고·물림, 라이벌 버팀·추월. 상어가 가까우면 심장 박동 소리가 빨라진다
+  // 모드 사건: 상어 경고·물림, 라이벌 버팀·추월. 상어 모드의 배경 음악은 가까울수록 빨라진다
   for (const e of session.drainModeEvents()) handleModeEvent(e)
-  if (m.shark && session.phase === 'running') cues.sharkPulse(m.shark.danger, performance.now())
+  if (m.shark) sharkScore.update(m.shark.danger, m.shark.state, session.phase === 'running')
   if (!earlyUploadDone && session.phase === 'running' && m.elapsed >= 90 && !(source instanceof MockSource)) {
     earlyUploadDone = true
     void uploadBleLog('race-90s')
@@ -926,6 +932,7 @@ function showSummary() {
   if (!session) return
   metronome.stop()
   ambience.stop()
+  sharkScore.stop()
   const m = session.metrics()
   const s = session
   session = null
@@ -1089,6 +1096,7 @@ document.addEventListener('visibilitychange', () => {
   } else if (document.visibilityState !== 'visible') {
     metronome.stop()
     ambience.stop()
+    sharkScore.stop()
   }
 })
 

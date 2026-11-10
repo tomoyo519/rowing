@@ -100,21 +100,6 @@ export class AudioCues {
     this.say('잡혔습니다')
   }
 
-  /**
-   * 상어가 가까울 때 심장 박동처럼 울리는 낮은 둥 소리. 위험도가 높을수록 빨라진다.
-   * 매 프레임 불러도 간격이 찰 때만 울린다. danger 0.35 아래에선 조용하다.
-   */
-  private lastPulseAt = 0
-  sharkPulse(danger: number, now: number) {
-    if (danger < 0.35) return
-    const interval = 1400 - (danger - 0.35) / 0.65 * 1000   // 1.4s → 0.4s
-    if (now - this.lastPulseAt < interval) return
-    this.lastPulseAt = now
-    const gain = 0.25 + danger * 0.3
-    this.tone(62, 0.12, gain)
-    this.tone(56, 0.14, gain * 0.7, 0.13)
-  }
-
   /** 라이벌이 추월당하지 않으려고 버틴다. @param subject 조사까지 붙인 이름 ('강변의 노장이') */
   rivalContest(subject: string) {
     this.tone(500, 0.10, 0.5)

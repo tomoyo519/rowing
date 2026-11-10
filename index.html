@@ -448,17 +448,32 @@
   .danger-veil.close { animation: danger-pulse var(--pulse, 1s) ease-in-out infinite; }
   @keyframes danger-pulse { 50% { opacity: calc(var(--danger, 0) * .4); } }
 
-  /* ── 뒤 보기 틀 (상어 모드) ── 안쪽은 비어 있고 3D가 그 자리에 그려진다. 코스 띠 아래 가운데 */
-  .rear-view {
-    position: absolute; left: 50%; top: calc(var(--safe-t) + 120px); transform: translateX(-50%);
-    width: min(26vw, 320px); aspect-ratio: 2 / 1; display: none;
-    border: 2px solid rgba(255,255,255,.42); border-radius: 12px;
-    box-shadow: 0 8px 26px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35);
+  /* ── 상어 시점 틀 (상어 모드) ── 안쪽은 비어 있고 3D가 그 자리에 그려진다.
+     가로 화면: 왼쪽 절반을 통째로 (세로 경계선 하나). 세로 화면: 코스 띠 아래 위쪽 띠. */
+  .shark-view { position: absolute; display: none; pointer-events: none; z-index: 1; }
+  .shark-view.on { display: block; }
+  .shark-view-k {
+    position: absolute; left: 18px; top: calc(var(--safe-t) + 118px);
+    font-size: 11px; font-weight: 700; color: rgba(255,255,255,.9); letter-spacing: .04em;
+    padding: 4px 9px; border-radius: 7px; background: var(--glass); border: 1px solid var(--glass-line);
   }
-  .rear-view.on { display: block; }
-  .rear-view span {
-    position: absolute; left: 8px; top: 6px; font-size: 10px; font-weight: 700; color: rgba(255,255,255,.85);
-    padding: 1px 6px; border-radius: 5px; background: rgba(6,13,20,.6);
+  @media (orientation: landscape) {
+    .shark-view { left: 0; top: 0; bottom: 0; width: 50%; border-right: 2px solid rgba(255,255,255,.38); }
+    /* 분할 중엔 HUD 아래 줄이 오른쪽 절반에 모인다 — 구간 카드만 왼쪽(상어 시점) 구석에 남는다 */
+    .hud.split .hud-bottom { grid-template-columns: 50% 1fr minmax(132px, 150px); }
+    .hud.split .seg-card { justify-self: start; width: min(272px, calc(100% - 16px)); }
+    .hud.split .landmark, .hud.split .start-hint, .hud.split .mode-toast { left: 75%; }
+    .hud.split .simctl { top: calc(var(--safe-t) + 152px); }
+  }
+  @media (orientation: portrait) {
+    .shark-view {
+      left: 14px; right: 14px; top: calc(var(--safe-t) + 132px); height: 30%;
+      border: 2px solid rgba(255,255,255,.42); border-radius: 12px;
+      box-shadow: 0 8px 26px rgba(0,0,0,.35);
+    }
+    .shark-view-k { left: 8px; top: 6px; font-size: 10px; padding: 2px 7px; }
+    /* 띠가 시뮬레이터 슬라이더 자리와 겹친다 — 슬라이더를 띠 아래로 내린다 */
+    .hud.split .simctl { top: calc(var(--safe-t) + 132px + 30vh + 10px); }
   }
 
   /* ── 모드 사건 알림 ── 상어 경고·물림, 라이벌 버팀·추월. 2.6초 뒤 사라진다 */
@@ -630,9 +645,6 @@
     .mini-bezel { width: 110px; height: 110px; }
     .landmark { top: 40%; }
     .mode-toast { top: 34%; } .mode-toast b { font-size: 22px; }
-    .rear-view { top: calc(var(--safe-t) + 132px); width: min(42vw, 300px); }
-    /* 세로 화면에선 뒤 보기 창이 시뮬레이터 슬라이더 자리와 겹친다 — 슬라이더를 창 아래로 내린다 */
-    .rear-view.on ~ .simctl { top: calc(var(--safe-t) + 300px); }
     .fb { padding-top: calc(var(--safe-t) + 150px); }
   }
 
@@ -826,7 +838,7 @@
 <!-- ───────── 레이스 ───────── -->
 <section id="screen-race" class="screen">
   <canvas id="cv"></canvas>
-  <div class="hud">
+  <div class="hud" id="hud">
     <div class="hud-top glass" id="hud-top">
       <div class="stat"><div class="k">시간</div><div class="v num" id="s-time">00:00</div></div>
       <div class="stat"><div class="k">거리</div><div class="v num"><span id="s-dist">0</span><span class="u">m</span></div></div>
@@ -901,8 +913,8 @@
 
     <!-- 상어가 가까울수록 화면 가장자리가 붉게 맥동한다 (블러 없음) -->
     <div class="danger-veil" id="danger-veil"></div>
-    <!-- 상어 모드의 뒤 보기 틀. 3D는 이 요소의 자리에 작은 뷰포트로 한 번 더 그린다 (view.ts attachRearView) -->
-    <div class="rear-view" id="rear-view" aria-label="뒤 보기"><span>뒤</span></div>
+    <!-- 상어 모드의 상어 시점 틀. 가로는 왼쪽 절반, 세로는 위쪽 띠. 3D는 이 요소의 자리에 상어 뒤 카메라로 한 번 더 그린다 (view.ts attachSharkView) -->
+    <div class="shark-view" id="shark-view" aria-label="상어 시점"><span class="shark-view-k">상어 시점</span></div>
     <!-- 모드 사건 알림: 상어 경고·물림, 라이벌 버팀·추월 -->
     <div class="mode-toast" id="mode-toast" aria-live="assertive"><b id="mode-toast-t"></b><span id="mode-toast-s"></span></div>
 

@@ -10,7 +10,8 @@ const [out = 'shots', quality = 'low', size = '1194x834'] = process.argv.slice(2
 const [vw, vh] = size.split('x').map(Number)
 mkdirSync(out, { recursive: true })
 const BASE = process.env.URL ?? 'http://localhost:5173/'
-const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] })
+// autoplay 허용: 상어 모드 배경 음악(Web Audio)이 실제로 돌아가며 예외를 내지 않는지 콘솔로 확인하기 위해
+const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] })
 const page = await browser.newPage({ viewport: { width: vw, height: vh }, deviceScaleFactor: 1 })
 const errs = []
 page.on('console', m => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)) })
