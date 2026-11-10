@@ -197,9 +197,11 @@ export function lineFor(e: CoxEvent): string | null {
       const g = Math.round(e.pass.gap)
       return `${e.pass.name} 통과. ${Math.abs(g)}미터 ${g >= 0 ? '앞' : '뒤'}`
     }
-    case 'weather':
+    case 'weather': {
       if (!e.label) return null
-      return e.label === '무지개' ? '무지개! 코인 3배!' : `${e.label}${e.label === '눈' ? '!' : '가 와요.'} 코인 ${trimMult(e.mult)}배`
+      const head = e.label === '무지개' ? '무지개!' : e.label === '바람' ? '바람이 세요.' : e.label === '비' ? '비가 와요.' : `${e.label}!`
+      return `${head} 코인 ${trimMult(e.mult)}배${e.label === '무지개' ? '!' : ''}`
+    }
     case 'launch': return null
   }
 }
