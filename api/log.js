@@ -5,7 +5,7 @@
 //   GET  /api/log?key=K&latest=1       가장 최근 로그 본문(text)
 //   GET  /api/log?key=K&n=3            최근 3개 본문을 이어서(text)
 // 스토어는 Private으로 만들었으므로 blob도 private으로 쓰고, 읽을 때는 SDK get()으로 토큰을 써서 가져온다.
-// 환경변수: BLOB_READ_WRITE_TOKEN (Vercel Storage에서 Blob 스토어를 프로젝트에 연결하면 자동 추가),
+// 환경변수: BLOB_STORE_ID(+Vercel OIDC) 또는 BLOB_READ_WRITE_TOKEN — Storage에서 스토어를 프로젝트에 연결하면 자동 추가,
 //           LOG_READ_KEY (읽기 키 — 대시보드에서 직접 설정)
 import { put, list, get } from '@vercel/blob'
 
@@ -22,8 +22,9 @@ async function readBody(req) {
 }
 
 export default async function handler(req, res) {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    res.status(503).json({ error: 'blob-not-configured', hint: 'Vercel 대시보드 → Storage → Create → Blob을 만들어 이 프로젝트에 연결한 뒤 다시 배포하세요' })
+  // 스토어를 프로젝트에 연결하면 요즘은 읽기·쓰기 토큰 대신 BLOB_STORE_ID + Vercel OIDC 토큰이 들어온다. SDK가 둘 다 알아서 쓴다.
+  if (!process.env.BLOB_READ_WRITE_TOKEN && !process.env.BLOB_STORE_ID) {
+    res.status(503).json({ error: 'blob-not-configured', hint: 'Vercel 대시보드 → Storage → Blob 스토어를 이 프로젝트에 연결한 뒤 다시 배포하세요' })
     return
   }
 
