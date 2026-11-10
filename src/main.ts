@@ -21,6 +21,7 @@ import { AudioCues } from './audio/cues'
 import { AMBIENT_AUDIO_ATTRIBUTION_URL, AmbientSoundscape } from './audio/ambience'
 import { loadGhost } from './game/ghost'
 import { createCoursePath, type CoursePath } from './game/coursePath'
+import { GAME_MODES, gameModeById, josa, type GameModeId, type ModeEvent } from './game/modes'
 import type { RowerSource } from './types'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
@@ -46,12 +47,21 @@ const AVATARS: { id: RigBody; label: string; hint: string }[] = [
   { id: 'male', label: '남자', hint: '모자' },
 ]
 let avatarBody: RigBody = loadAvatarBody()
+/** 플레이 모드. 아바타처럼 이 브라우저에 저장된다 */
+const MODE_KEY = 'makeRowing.mode.v1'
+let selectedMode: GameModeId = loadMode()
 
 function loadAvatarBody(): RigBody {
   try { return localStorage.getItem(AVATAR_KEY) === 'female' ? 'female' : 'male' } catch { return 'male' }
 }
 function saveAvatarBody(body: RigBody) {
   try { localStorage.setItem(AVATAR_KEY, body) } catch { /* 저장소 미지원 — 이번 세션만 유지 */ }
+}
+function loadMode(): GameModeId {
+  try { return gameModeById(localStorage.getItem(MODE_KEY)).id } catch { return 'classic' }
+}
+function saveMode(mode: GameModeId) {
+  try { localStorage.setItem(MODE_KEY, mode) } catch { /* 저장소 미지원 */ }
 }
 let wakeLock: WakeLockSentinel | null = null
 /** 늦게 끝난 화면 잠금 요청이 종료된 레이스의 잠금을 되살리지 않게 하는 세대 번호 */
@@ -113,7 +123,7 @@ function bleLogText() {
 function sessionTraceText(): string {
   if (!session) return '(세션 없음)'
   const m = session.metrics()
-  const head = `session course=${session.course.id} base=${session.baseSplit}s phase=${session.phase} elapsed=${m.elapsed.toFixed(1)} dist=${m.distance.toFixed(1)} paceBoat=${session.paceDistance.toFixed(1)} gap=${m.gap.toFixed(1)} speedSource=${m.speedSource} paceDistrusted=${m.paceDistrusted} sim=${source instanceof MockSource}`
+  const head = `session course=${session.course.id} mode=${session.mode} base=${session.baseSplit}s phase=${session.phase} elapsed=${m.elapsed.toFixed(1)} dist=${m.distance.toFixed(1)} paceBoat=${session.paceDistance.toFixed(1)} gap=${m.gap.toFixed(1)} speedSource=${m.speedSource} paceDistrusted=${m.paceDistrusted} sim=${source instanceof MockSource}`
   const rows = session.track
     .filter(x => x.t % 10 === 0)
     .map(x => `${x.t}\t${x.d.toFixed(0)}\t${isFinite(x.split) ? x.split.toFixed(1) : '-'}\t${x.spm.toFixed(1)}\t${x.power.toFixed(0)}`)
@@ -364,9 +374,24 @@ $('btn-hr').addEventListener('click', async () => {
 function goCourseSelect() {
   renderAvatars()
   renderTiers()
+  renderModes()
   renderCourses()
   syncHrRow()
   show('screen-course')
+}
+
+function renderModes() {
+  const el = $('modes')
+  el.innerHTML = ''
+  for (const m of GAME_MODES) {
+    const b = document.createElement('button')
+    b.className = 'tier mode' + (m.id === selectedMode ? ' sel' : '')
+    b.setAttribute('aria-pressed', String(m.id === selectedMode))
+    b.innerHTML = `<b>${m.label}</b><span>${m.hint}</span>`
+    b.addEventListener('click', () => { selectedMode = m.id; saveMode(m.id); renderModes() })
+    el.appendChild(b)
+  }
+  $('mode-hint').textContent = gameModeById(selectedMode).description
 }
 
 function renderAvatars() {
@@ -528,8 +553,12 @@ async function startRace() {
   const ghost = loadGhost(selectedCourse.id)
   // 개발 중에는 `?weather=seed`로 날씨 일정을 고정해 같은 하늘을 다시 볼 수 있다.
   const weatherSeed = new URLSearchParams(location.search).get('weather')
-  session = new Session(selectedCourse, selectedTier.split, ghost, weatherSeed ? `${selectedCourse.id}:${weatherSeed}` : undefined)
+  session = new Session(
+    selectedCourse, selectedTier.split, ghost,
+    weatherSeed ? `${selectedCourse.id}:${weatherSeed}` : undefined, selectedMode,
+  )
   earlyUploadDone = false
+  hideModeToast()
   const knownHr = (hrSensor?.status === 'connected' ? lastHr : null) ?? rowerHr
   if (knownHr) session.setExternalHeartRate(knownHr.bpm, knownHr.at)
   lastPaceDistrusted = false
@@ -556,9 +585,12 @@ async function startRace() {
   raceTotal = projectedDistance(selectedCourse, selectedTier.split)
   show('screen-race')
   // 코스 띠는 폭을 재서 그리므로 화면이 보인 뒤에 만든다
-  hud.start(selectedCourse, racePath, raceTotal, ghost !== null)
+  hud.start(selectedCourse, racePath, raceTotal, ghost !== null, selectedMode)
   view?.dispose()
   view = new View(cv, session, avatarBody)
+  // 상어 모드에서만 뒤 보기 틀을 보이고 그 자리에 3D를 한 번 더 그린다
+  $('rear-view').classList.toggle('on', selectedMode === 'shark')
+  view.attachRearView(selectedMode === 'shark' ? $('rear-view') : null)
   view.resize()
   if (import.meta.env.DEV) (window as unknown as { __rowing: unknown }).__rowing = { session, view }
 
@@ -745,11 +777,60 @@ function checkFeedback() {
 
   const idx = Math.round(due / CHECKPOINT) - 1
   // 다음 구간이 이번 구간과 다르면 예고해준다
-  const now = session.metrics().step.label
+  const m = session.metrics()
+  const now = m.step.label
   const soon = session.stepLabelAt(elapsed + 60)
-  const fb = buildFeedback(w, session.metrics().gap, idx, soon !== now ? soon : undefined, due)
+  // 카드의 거리 타일은 모드의 상대와의 차이다 — 상어까지의 거리, 라이벌 대비 ±
+  const gap = m.shark ? m.shark.gap : m.rival ? m.rival.gap : m.gap
+  const fb = buildFeedback(w, gap, idx, soon !== now ? soon : undefined, due, gameModeById(session.mode).actor)
   feedbackModal.show(fb)
   cues.feedback(fb.title)
+}
+
+// ── 모드 사건 알림 ──────────────────────────────────────────
+let modeToastTimer: number | null = null
+
+function showModeToast(title: string, sub: string, tone: 'warn' | 'danger' | 'win') {
+  const el = $('mode-toast')
+  $('mode-toast-t').textContent = title
+  $('mode-toast-s').textContent = sub
+  el.className = `mode-toast ${tone}`
+  // 연달아 뜨면 애니메이션을 처음부터 다시
+  void el.offsetWidth
+  el.classList.add('on')
+  if (modeToastTimer !== null) window.clearTimeout(modeToastTimer)
+  modeToastTimer = window.setTimeout(() => { el.classList.remove('on'); modeToastTimer = null }, 2600)
+}
+
+function hideModeToast() {
+  if (modeToastTimer !== null) window.clearTimeout(modeToastTimer)
+  modeToastTimer = null
+  $('mode-toast').classList.remove('on')
+}
+
+/** 세션이 내보낸 모드 사건을 알림과 소리로 바꾼다 */
+function handleModeEvent(e: ModeEvent) {
+  switch (e.kind) {
+    case 'shark-warn':
+      showModeToast('상어가 다가옵니다!', '몇 스트로크 세게 당기세요', 'warn')
+      cues.sharkWarn()
+      break
+    case 'shark-surge':
+      cues.sharkSurge()
+      break
+    case 'shark-bite':
+      showModeToast('잡혔다!', `${e.caught}번째 · 상어가 잠깐 물러납니다`, 'danger')
+      cues.sharkBite()
+      break
+    case 'rival-contest':
+      showModeToast(`${josa(e.name, '이', '가')} 버팁니다!`, '10초만 더 밀어붙이세요', 'warn')
+      cues.rivalContest(josa(e.name, '이', '가'))
+      break
+    case 'rival-overtake':
+      showModeToast(`추월! ${e.passed}명째`, `다음 라이벌 ‘${e.next}’${josa(e.next, '이', '가')} 앞에 나타났습니다`, 'win')
+      cues.overtake(e.passed)
+      break
+  }
 }
 
 let lmShownAt = -1
@@ -769,12 +850,16 @@ function updateHud(dt: number) {
       ? ['연결이 끊어졌습니다', '다시 연결되면 노를 저어 출발하세요']
       : m.stallReason === 'nodata'
         ? ['로잉머신 데이터가 오지 않습니다', '콘솔을 깨우고 손잡이를 당겨보세요 · 계속 안 되면 연결 화면에서 다시 연결하세요']
-        : ['노를 저으면 출발합니다', '페이스 보트가 옆에서 기다리는 중']
+        : ['노를 저으면 출발합니다', gameModeById(session.mode).waitHint]
     hint.querySelector('b')!.textContent = title
     hint.querySelector('span')!.textContent = sub
   }
   if (lastPhase === 'armed' && session.phase === 'running') cues.launch()
   lastPhase = session.phase
+
+  // 모드 사건: 상어 경고·물림, 라이벌 버팀·추월. 상어가 가까우면 심장 박동 소리가 빨라진다
+  for (const e of session.drainModeEvents()) handleModeEvent(e)
+  if (m.shark && session.phase === 'running') cues.sharkPulse(m.shark.danger, performance.now())
   if (!earlyUploadDone && session.phase === 'running' && m.elapsed >= 90 && !(source instanceof MockSource)) {
     earlyUploadDone = true
     void uploadBleLog('race-90s')
@@ -850,6 +935,7 @@ function showSummary() {
   cues.stopSpeech()
   view?.dispose(); view = null
   feedbackModal.reset()
+  hideModeToast()
   releaseWakeLock()
 
   const completed = m.progress >= 0.999
@@ -859,13 +945,26 @@ function showSummary() {
   const km = (m.distance / 1000).toFixed(2)
   const minutes = Math.max(1, Math.round(m.elapsed / 60))
   const gapM = Math.abs(Math.round(m.gap))
+  const effort = `<b>${minutes}분</b> 동안 <b>${km}km</b>를 저었어요. 끝까지 해낸 것 자체가 오늘의 승리예요.`
   const lines = [
-    m.gap >= 0
-      ? `<b>${s.course.name}</b>에서 페이스 보트를 <b>${gapM}m</b> 따돌렸어요! 오늘 노 젓기, 정말 멋졌어요.`
-      : gapM <= 30
-        ? `페이스 보트와 단 <b>${gapM}m</b> 차이! 거의 나란히 들어왔어요. 다음엔 분명 앞설 거예요.`
-        : `<b>${minutes}분</b> 동안 <b>${km}km</b>를 저었어요. 끝까지 해낸 것 자체가 오늘의 승리예요.`,
+    m.shark
+      ? (m.shark.caught === 0
+        ? `<b>${s.course.name}</b>에서 상어를 한 번도 안 잡히고 따돌렸어요! 최대 <b>${Math.round(m.shark.maxLead)}m</b>까지 벌렸어요.`
+        : m.shark.caught <= 2
+          ? `상어에게 <b>${m.shark.caught}번</b> 잡혔지만 그때마다 다시 떨쳐냈어요. 최대 <b>${Math.round(m.shark.maxLead)}m</b>까지 벌렸어요.`
+          : `상어에게 <b>${m.shark.caught}번</b> 잡혔어요. ${effort}`)
+      : m.rival
+        ? (m.rival.passed > 0
+          ? `<b>${s.course.name}</b>에서 라이벌 <b>${m.rival.passed}명</b>을 추월했어요! 마지막 상대 ‘${m.rival.name}’${m.rival.gap >= 0 ? '도 지나쳤어요.' : `까지 <b>${Math.round(-m.rival.gap)}m</b> 남았었어요.`}`
+          : `‘${m.rival.name}’까지 <b>${Math.round(Math.max(0, -m.rival.gap))}m</b>. ${effort}`)
+        : m.gap >= 0
+          ? `<b>${s.course.name}</b>에서 페이스 보트를 <b>${gapM}m</b> 따돌렸어요! 오늘 노 젓기, 정말 멋졌어요.`
+          : gapM <= 30
+            ? `페이스 보트와 단 <b>${gapM}m</b> 차이! 거의 나란히 들어왔어요. 다음엔 분명 앞설 거예요.`
+            : effort,
   ]
+  if (completed && m.shark && m.shark.caught === 0) $('sum-title').textContent = '무사히 탈출!'
+  if (completed && m.rival && m.rival.passed > 0) $('sum-title').textContent = `${m.rival.passed}명 추월!`
 
   // 고스트(지난 최고 기록) 대비.
   // ⚠️ 이번 세션을 저장하기 전에 비교해야 한다 — 저장 후엔 이번 기록이 최고가 되어버린다
@@ -910,13 +1009,27 @@ function showSummary() {
       completed,
       curve: thinCurve(s.track),
     }
+    if (s.mode !== 'classic') {
+      rec.mode = s.mode
+      rec.modeScore = m.shark ? m.shark.caught : m.rival ? m.rival.passed : 0
+    }
     saveRecord(rec)
   }
 
   // 거리는 한 번만 크게 — 나머지는 타일. 비교는 칩으로 (글리프 + 글자, 색만으로 뜻을 나르지 않는다)
   $('sum-dist').textContent = (m.distance / 1000).toFixed(2)
-  $('sum-course').textContent = `${s.course.name} · ${s.course.venue.location}`
-  const chips = [deltaChipHtml(m.gap, 'm', '페이스 보트 대비')]
+  $('sum-course').textContent = `${s.course.name} · ${s.course.venue.location}${s.mode !== 'classic' ? ` · ${gameModeById(s.mode).label}` : ''}`
+  const chips = m.shark
+    ? [
+      `<span class="delta ${m.shark.caught === 0 ? 'good' : 'bad'}"><i>${m.shark.caught === 0 ? '●' : '▼'}</i><b class="num">${m.shark.caught}회</b><span>상어에게 잡힘</span></span>`,
+      deltaChipHtml(m.shark.maxLead, 'm', '상어와 최대 거리'),
+    ]
+    : m.rival
+      ? [
+        `<span class="delta ${m.rival.passed > 0 ? 'good' : 'flat'}"><i>${m.rival.passed > 0 ? '▲' : '●'}</i><b class="num">${m.rival.passed}명</b><span>라이벌 추월</span></span>`,
+        deltaChipHtml(m.rival.gap, 'm', `${m.rival.name} 대비`),
+      ]
+      : [deltaChipHtml(m.gap, 'm', '페이스 보트 대비')]
   if (isFinite(m.avgSplit) && m.distance > 50) chips.push(deltaChipHtml(m.avgSplit - s.baseSplit, 's', '목표 스플릿 대비', false))
   if (prevBest && completed) chips.push(deltaChipHtml(m.distance - prevBest.distance, 'm', '내 최고 대비'))
   $('sum-chips').innerHTML = chips.join('')

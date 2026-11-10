@@ -77,6 +77,59 @@ export class AudioCues {
     this.say('다시 연결됐습니다')
   }
 
+  // ── 플레이 모드 ─────────────────────────────────────────
+
+  /** 상어가 몇 초 뒤 덮친다 — 낮은 두 음이 바짝 붙는다 */
+  sharkWarn() {
+    this.tone(110, 0.22, 0.6)
+    this.tone(124, 0.26, 0.6, 0.28)
+    this.say('상어가 다가옵니다')
+  }
+
+  /** 지금 덮치는 중 — 세 음이 빠르게 올라간다 */
+  sharkSurge() {
+    this.tone(150, 0.10, 0.55)
+    this.tone(190, 0.10, 0.55, 0.11)
+    this.tone(240, 0.16, 0.55, 0.22)
+  }
+
+  /** 물렸다 */
+  sharkBite() {
+    this.tone(90, 0.36, 0.7)
+    this.tone(70, 0.5, 0.6, 0.16)
+    this.say('잡혔습니다')
+  }
+
+  /**
+   * 상어가 가까울 때 심장 박동처럼 울리는 낮은 둥 소리. 위험도가 높을수록 빨라진다.
+   * 매 프레임 불러도 간격이 찰 때만 울린다. danger 0.35 아래에선 조용하다.
+   */
+  private lastPulseAt = 0
+  sharkPulse(danger: number, now: number) {
+    if (danger < 0.35) return
+    const interval = 1400 - (danger - 0.35) / 0.65 * 1000   // 1.4s → 0.4s
+    if (now - this.lastPulseAt < interval) return
+    this.lastPulseAt = now
+    const gain = 0.25 + danger * 0.3
+    this.tone(62, 0.12, gain)
+    this.tone(56, 0.14, gain * 0.7, 0.13)
+  }
+
+  /** 라이벌이 추월당하지 않으려고 버틴다. @param subject 조사까지 붙인 이름 ('강변의 노장이') */
+  rivalContest(subject: string) {
+    this.tone(500, 0.10, 0.5)
+    this.tone(500, 0.10, 0.5, 0.14)
+    this.say(`${subject} 버팁니다`)
+  }
+
+  /** 추월! */
+  overtake(passed: number) {
+    this.tone(660, 0.12, 0.55)
+    this.tone(880, 0.12, 0.55, 0.12)
+    this.tone(1320, 0.3, 0.55, 0.24)
+    this.say(`추월! ${passed}명째`)
+  }
+
   /** 음소거 시 진행 중인 발화를 즉시 끊는다 */
   stopSpeech() {
     try { window.speechSynthesis?.cancel() } catch { /* 무시 */ }

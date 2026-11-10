@@ -1745,6 +1745,19 @@ export class World {
   /**
    * 하늘을 환경맵으로 굽는다 (날씨가 바뀔 때만). 렌더러가 필요해 View가 프레임마다 부른다.
    */
+  /**
+   * 보조 카메라(상어 모드의 뒤 보기)가 볼 수 있는 레이어를 켠다 — 하늘·물·조명·강둑 띠만.
+   * 나무·소품·랜드마크는 빼서 작은 뷰포트 한 번 더 그리는 값을 싸게 한다. 조명도 켜야 검게 나오지 않는다.
+   */
+  enableLayer(layer: number) {
+    for (const obj of [this.sky, this.water.mesh, this.sun, this.hemi, this.ambient]) obj.layers.enable(layer)
+    this.courseRoot.traverse(node => {
+      if (node.name === 'scenery:bank' || node.name === 'scenery:meadow' || node.name === 'scenery:shore') {
+        node.layers.enable(layer)
+      }
+    })
+  }
+
   updateEnvironment(renderer: THREE.WebGLRenderer) {
     const s = this.weather.state
     const key = `${s.from}:${s.to}:${s.mix.toFixed(1)}:${s.rainbow.toFixed(1)}`

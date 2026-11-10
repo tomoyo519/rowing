@@ -1,5 +1,5 @@
 import {
-  loadHistory, deleteRecord, totals, personalBest, type SessionRecord,
+  loadHistory, deleteRecord, totals, personalBest, modeTag, type SessionRecord,
 } from '../game/history'
 import { COURSES } from '../game/courses'
 import { formatSplit, formatClock } from '../game/physics'
@@ -90,6 +90,7 @@ function row(r: SessionRecord, isPb: boolean): string {
       <div>
         <span class="nm">${escapeHtml(r.courseName)}</span>
         ${isPb ? '<span class="pb">PB</span>' : ''}
+        ${modeTag(r) ? `<span class="mode-tag">${escapeHtml(modeTag(r))}</span>` : ''}
         ${r.completed ? '' : '<span class="dnf">중단</span>'}
       </div>
       <div class="when">${when(r.at)}</div>

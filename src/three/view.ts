@@ -8,7 +8,8 @@ import { World, type AmbientPresence } from './world'
 import { markReflective, PlanarReflection } from './reflection'
 import { initialQuality, QUALITY_PRESETS, QualityGovernor, type QualitySettings, type QualityTier } from './quality'
 import { applyAnisotropy } from './textures'
-import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST, type RigBody } from './rig'
+import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST, COLORS_RIVALS, type RigBody } from './rig'
+import { Shark } from './shark'
 import { projectedDistance } from '../game/courses'
 import { splitToSpeed } from '../game/physics'
 import { StrokeEngine } from '../game/stroke'
@@ -18,9 +19,22 @@ import {
   PACE_LANE_OFFSET,
   GHOST_LANE_OFFSET,
   PLAYER_LANE_OFFSET,
+  SHARK_LANE_OFFSET,
   type CoursePath,
 } from '../game/coursePath'
 import type { Session } from '../game/state'
+import { SHARK_BITE_REACH } from '../game/modes'
+
+/** 상대 보트·상어는 내 보트에서 이 거리(m) 안에 있을 때만 그린다 */
+const ACTOR_VISIBLE_M = 90
+/**
+ * 뒤 보기(상어 모드) 카메라가 보는 레이어. 반사 레이어(1)와 겹치지 않게 2.
+ * 추격 카메라는 앞만 보므로 뒤에서 오는 상어는 물릴 때까지 안 보인다 — 뱃머리 위에서 뒤를 보는
+ * 작은 뷰포트를 화면 위에 하나 더 그린다. 하늘·물·강둑·내 보트·상어만 그려서 싸다.
+ */
+const REAR_LAYER = 2
+
+interface ViewportRect { x: number; y: number; w: number; h: number }
 
 /** 페이스 보트가 나란히 달리는 옆 레인 간격 (m) */
 export const PACE_LANE_Z = PACE_LANE_OFFSET - PLAYER_LANE_OFFSET
@@ -39,6 +53,11 @@ export interface TurnEffects {
   cameraBank: number
   cameraLateral: number
   cameraLookZ: number
+}
+
+/** 오브젝트(와 자식)를 보조 카메라 레이어에도 올린다. 메인 카메라에는 그대로 보인다 */
+function enableLayer(object: THREE.Object3D, layer: number) {
+  object.traverse(node => node.layers.enable(layer))
 }
 
 /** 42m 앞의 진행 방향을 기준으로 -1..1 범위의 커브 강도를 만든다. */
@@ -99,13 +118,33 @@ export class View {
   private camera: THREE.PerspectiveCamera
   private world: World
   private player: Rig
-  private pace: Rig
+  /** 클래식 모드의 페이스 보트. 상어·추월 모드에서는 상어·라이벌이 그 자리를 맡아 만들지 않는다 */
+  private pace: Rig | null = null
   /** 지난 최고 기록이 있을 때만 만든다 */
   private ghost: Rig | null = null
   private ghostStroke = new StrokeEngine(3)
   private ghostSpeed = 0
   private total: number
   private paceStroke = new StrokeEngine(2)
+  /** 상어 추격 모드 */
+  private shark: Shark | null = null
+  /** 마지막으로 본 물린 횟수 — 늘어나면 무는 연출을 시작한다 */
+  private sharkCaught = 0
+  /** 뒤 보기 카메라 (상어 모드). 뱃머리 위에서 선미 너머를 본다 */
+  private rearCamera: THREE.PerspectiveCamera | null = null
+  /** 뒤 보기를 그릴 화면 영역 (CSS px, 좌상단 기준). HUD의 틀 요소를 재서 정한다 */
+  private rearRect: ViewportRect | null = null
+  private rearFrame: HTMLElement | null = null
+  /**
+   * 추월 레이스의 라이벌 두 벌. 추월하면 지나간 배는 제 속도로 뒤로 멀어지고
+   * 다른 벌이 새 라이벌로 앞에 선다 — 한 벌로 순간이동시키면 눈에 띈다.
+   */
+  private rivals: Rig[] = []
+  private rivalStrokes: StrokeEngine[] = []
+  private rivalSpeeds: number[] = []
+  /** 지금 라이벌이 쓰는 벌 (0/1). 추월할 때마다 바뀐다 */
+  private rivalSlot = 0
+  private rivalIndex = -1
   private camShake = 0
   private frameZ = 0
   private turnStrength = 0
@@ -151,12 +190,40 @@ export class View {
     this.player = new Rig(COLORS_PLAYER, 1, 0, body)
     this.world.scene.add(this.player.group)
 
-    this.pace = new Rig(COLORS_PACE, 0.82, 1.7)
-    this.pace.group.position.z = PACE_LANE_Z
-    this.world.scene.add(this.pace.group)
-    this.paceStroke.onSample(24, undefined, 0)
-    this.paceStroke.spm = 24
-    this.paceStroke.phase = 0.45
+    if (session.mode === 'classic') {
+      this.pace = new Rig(COLORS_PACE, 0.82, 1.7)
+      this.pace.group.position.z = PACE_LANE_Z
+      this.world.scene.add(this.pace.group)
+      this.paceStroke.onSample(24, undefined, 0)
+      this.paceStroke.spm = 24
+      this.paceStroke.phase = 0.45
+    } else if (session.mode === 'shark') {
+      this.shark = new Shark()
+      this.world.scene.add(this.shark.group)
+      // 뒤 보기: 뱃머리 위에서 선미 너머를 본다. 로어는 선미를 보고 앉으니 얼굴이, 그 뒤로 상어가 보인다.
+      // 화각을 좁혀 당겨 본다 — 작은 창에서 14m 뒤 지느러미가 점이 되지 않게. 먼 평면은 하늘 돔(반지름 400)을 넘겨야 한다
+      this.rearCamera = new THREE.PerspectiveCamera(26, 2, 0.1, 700)
+      this.rearCamera.position.set(4.2, 2.6, 0)
+      this.rearCamera.lookAt(-18, -0.4, 0)
+      this.rearCamera.layers.set(REAR_LAYER)
+      this.world.enableLayer(REAR_LAYER)
+      enableLayer(this.player.group, REAR_LAYER)
+      enableLayer(this.shark.group, REAR_LAYER)
+    } else if (session.mode === 'chase') {
+      // 라이벌은 체형도 번갈아 다르다 — 추월할 때마다 다른 사람이 나타난다
+      for (let i = 0; i < 2; i++) {
+        const rig = new Rig(COLORS_RIVALS[i]!, 1, 5.3 + i * 1.8, i === 0 ? 'female' : 'male')
+        rig.group.visible = false
+        this.world.scene.add(rig.group)
+        this.rivals.push(rig)
+        const stroke = new StrokeEngine(11 + i)
+        stroke.onSample(26, undefined, 0)
+        stroke.spm = 26
+        stroke.phase = 0.3 + i * 0.45
+        this.rivalStrokes.push(stroke)
+        this.rivalSpeeds.push(0)
+      }
+    }
 
     if (session.ghost) {
       // 고스트는 지난 나 — 같은 체형이다
@@ -170,8 +237,10 @@ export class View {
 
     // 보트들은 수면에 비친다 — 강 장면이 진짜로 보이는 가장 큰 단서
     markReflective(this.player.group)
-    markReflective(this.pace.group)
+    if (this.pace) markReflective(this.pace.group)
     if (this.ghost) markReflective(this.ghost.group)
+    if (this.shark) markReflective(this.shark.group)
+    for (const rival of this.rivals) markReflective(rival.group)
     applyAnisotropy(this.renderer)
     this.applyQuality(this.quality)
   }
@@ -226,6 +295,45 @@ export class View {
     // 세로 화면에서는 화각을 넓혀 보트가 잘리지 않게 한다
     this.camera.fov = w / h < 1 ? cam.fovPortrait : cam.fov
     this.camera.updateProjectionMatrix()
+    this.measureRearView()
+  }
+
+  /**
+   * 뒤 보기를 그릴 자리를 HUD 틀 요소로 알려준다 (상어 모드가 아니면 무시된다).
+   * 캔버스가 화면 전체를 덮으므로 요소의 화면 좌표가 곧 캔버스 좌표다.
+   */
+  attachRearView(frame: HTMLElement | null) {
+    this.rearFrame = frame
+    this.measureRearView()
+  }
+
+  private measureRearView() {
+    if (!this.rearCamera || !this.rearFrame) { this.rearRect = null; return }
+    const r = this.rearFrame.getBoundingClientRect()
+    if (r.width < 8 || r.height < 8) { this.rearRect = null; return }
+    // 틀의 테두리 안쪽에 그린다
+    const inset = 2
+    this.rearRect = { x: r.left + inset, y: r.top + inset, w: r.width - inset * 2, h: r.height - inset * 2 }
+    this.rearCamera.aspect = this.rearRect.w / this.rearRect.h
+    this.rearCamera.updateProjectionMatrix()
+  }
+
+  /** 뒤 보기 — 메인 렌더 뒤에 작은 뷰포트로 한 번 더 그린다. 평면 반사는 메인 카메라 기준이라 여기선 끈다 */
+  private renderRearView() {
+    if (!this.rearCamera || !this.rearRect) return
+    const renderer = this.renderer
+    const size = renderer.getSize(new THREE.Vector2())
+    const { x, y, w, h } = this.rearRect
+    // WebGL 뷰포트 원점은 좌하단
+    const vy = size.y - y - h
+    renderer.setScissorTest(true)
+    renderer.setScissor(x, vy, w, h)
+    renderer.setViewport(x, vy, w, h)
+    this.world.water.setReflection(null)
+    renderer.render(this.world.scene, this.rearCamera)
+    this.world.water.setReflection(this.reflection.enabled ? this.reflection : null)
+    renderer.setScissorTest(false)
+    renderer.setViewport(0, 0, size.x, size.y)
   }
 
   render(session: Session, timeSec: number, dt: number) {
@@ -244,23 +352,75 @@ export class View {
     // 사용자가 첫 스트로크를 넣어야 함께 출발한다.
     const running = session.phase === 'running'
 
-    // 페이스 보트는 플레이어와 다른 위상으로 젓는다 — 실루엣이 한 몸처럼 겹치지 않는다
-    if (running) this.paceStroke.onSample(paceStrokeRate(m.intensity, session.baseSplit), undefined, timeSec * 1000)
-    else this.paceStroke.coast()
-    this.paceStroke.update(dt)
-    this.pace.apply(this.paceStroke.pose(), dt, running ? m.paceSpeed : 0)
-    const pacePoint = localPathPoint(
-      this.path,
-      m.distance,
-      -m.gap,
-      PACE_LANE_OFFSET,
-      PLAYER_LANE_OFFSET,
-    )
-    this.pace.group.position.x = pacePoint.x
-    this.pace.group.position.z = pacePoint.z
-    this.pace.group.rotation.y = -pacePoint.yaw
-    const visible = Math.abs(m.gap) < 90
-    this.pace.group.visible = visible
+    // 화면에 들어오는 상대들의 z — 카메라가 모두를 프레임에 넣도록 가운데를 잡는다
+    const zs = [0]
+
+    // ── 페이스 보트 (클래식) ─────────────────────────────────
+    if (this.pace) {
+      // 페이스 보트는 플레이어와 다른 위상으로 젓는다 — 실루엣이 한 몸처럼 겹치지 않는다
+      if (running) this.paceStroke.onSample(paceStrokeRate(m.intensity, session.baseSplit), undefined, timeSec * 1000)
+      else this.paceStroke.coast()
+      this.paceStroke.update(dt)
+      this.pace.apply(this.paceStroke.pose(), dt, running ? m.paceSpeed : 0)
+      const pacePoint = localPathPoint(this.path, m.distance, -m.gap, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET)
+      this.pace.group.position.x = pacePoint.x
+      this.pace.group.position.z = pacePoint.z
+      this.pace.group.rotation.y = -pacePoint.yaw
+      this.pace.group.visible = Math.abs(m.gap) < ACTOR_VISIBLE_M
+      if (this.pace.group.visible) zs.push(this.pace.group.position.z)
+    }
+
+    // ── 상어 (상어 추격) ─────────────────────────────────────
+    if (this.shark && m.shark) {
+      const sv = m.shark
+      if (sv.caught > this.sharkCaught) this.shark.bite()
+      this.sharkCaught = sv.caught
+      this.shark.update(dt, running ? sv.speed : 0, sv.state)
+      // 그룹 원점이 코끝: 선미(보트 중심 − SHARK_BITE_REACH)에서 gap만큼 뒤
+      const along = -(sv.gap + SHARK_BITE_REACH)
+      const point = localPathPoint(this.path, m.distance, along, SHARK_LANE_OFFSET, PLAYER_LANE_OFFSET)
+      this.shark.group.position.x = point.x
+      this.shark.group.position.z = point.z
+      this.shark.group.rotation.y = -point.yaw
+      this.shark.group.visible = sv.gap < ACTOR_VISIBLE_M
+      if (this.shark.group.visible) zs.push(this.shark.group.position.z)
+    }
+
+    // ── 라이벌 (추월 레이스) ─────────────────────────────────
+    if (this.rivals.length && m.rival) {
+      const rv = m.rival
+      if (rv.index !== this.rivalIndex) {
+        // 새 라이벌 — 다른 벌을 쓴다. 지나간 벌은 previous로 뒤에 남는다
+        if (this.rivalIndex >= 0) this.rivalSlot = 1 - this.rivalSlot
+        this.rivalIndex = rv.index
+        this.rivalSpeeds[this.rivalSlot] = 0
+      }
+      const place = (slot: number, gap: number, speed: number) => {
+        const rig = this.rivals[slot]!
+        const stroke = this.rivalStrokes[slot]!
+        // 출발·추월 직후의 속도 변화는 평활한다 — 물결·항적이 튀지 않게
+        const prev = this.rivalSpeeds[slot] ?? 0
+        const v = prev + (speed - prev) * (1 - Math.exp(-dt / 0.6))
+        this.rivalSpeeds[slot] = v
+        if (running && v > 0.3) {
+          stroke.onSample(paceStrokeRate(v / splitToSpeed(session.baseSplit), session.baseSplit), undefined, timeSec * 1000)
+        } else {
+          stroke.coast()
+        }
+        stroke.update(dt)
+        rig.apply(stroke.pose(), dt, v)
+        const point = localPathPoint(this.path, m.distance, -gap, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET)
+        rig.group.position.x = point.x
+        rig.group.position.z = point.z
+        rig.group.rotation.y = -point.yaw
+        rig.group.visible = Math.abs(gap) < ACTOR_VISIBLE_M
+        if (rig.group.visible) zs.push(rig.group.position.z)
+      }
+      place(this.rivalSlot, rv.gap, running ? rv.speed : 0)
+      const other = 1 - this.rivalSlot
+      if (rv.previous) place(other, rv.previous.gap, rv.previous.speed)
+      else this.rivals[other]!.group.visible = false
+    }
 
     let ghostVisible = false
     let ghostZ = 0
@@ -306,8 +466,6 @@ export class View {
     const speedK = Math.min(1, session.boat.speed / 5)
     // 페이스 보트만 따라가면 반대편 고스트가 화면 밖으로 밀린다.
     // 보이는 보트들의 z 범위 중앙을 잡아야 셋 다 프레임에 들어온다.
-    const zs = [0]
-    if (visible) zs.push(this.pace.group.position.z)
     if (ghostVisible) zs.push(ghostZ)
     const targetFrameZ = (Math.min(...zs) + Math.max(...zs)) / 2
     this.frameZ += (targetFrameZ - this.frameZ) * (1 - Math.exp(-dt / 0.35))
@@ -339,6 +497,7 @@ export class View {
     this.reflection.render(this.renderer, this.world.scene, this.camera)
     if (this.composer) this.composer.render(dt)
     else this.renderer.render(this.world.scene, this.camera)
+    this.renderRearView()
   }
 
   /** 다음 카메라 프리셋으로. 이름을 돌려준다. */
@@ -361,6 +520,7 @@ export class View {
   dispose() {
     this.composer?.dispose()
     this.composerTarget?.dispose()
+    this.shark?.dispose()
     this.reflection.dispose()
     this.world.dispose()
     this.renderer.dispose()

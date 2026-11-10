@@ -34,6 +34,11 @@ export const PACE_LANE_OFFSET = -4.0
  * 페이스 보트(-7.2)만큼 벌리면 세 척이 화면 폭을 넘어가서 조금 좁혔다.
  */
 export const GHOST_LANE_OFFSET = 8.6
+/**
+ * 상어 추격 모드의 상어. 플레이어 레인에서 강 중심 쪽으로 조금 비켜 뒤따라온다 —
+ * 정확히 뒤에 두면 추격 카메라 축에 가려 지느러미가 안 보이고, 노 끝(2.75m)은 피해야 한다.
+ */
+export const SHARK_LANE_OFFSET = PLAYER_LANE_OFFSET - 1.6
 
 function hashString(value: string) {
   let hash = 2166136261

@@ -5,6 +5,8 @@
  * 브라우저 데이터를 지우면 같이 지워진다는 점은 UI에서 알려준다.
  */
 
+import type { GameModeId } from './modes'
+
 const KEY = 'makeRowing.history.v1'
 const MAX = 200
 
@@ -33,6 +35,17 @@ export interface SessionRecord {
   completed: boolean
   /** 1분 간격으로 솎아낸 스플릿 곡선 — 상세 화면 그래프용 */
   curve: { t: number; split: number }[]
+  /** 플레이 모드. 없으면 클래식 (모드가 생기기 전 기록) */
+  mode?: GameModeId
+  /** 모드 점수 — 상어: 잡힌 횟수, 추월: 추월한 수 */
+  modeScore?: number
+}
+
+/** 기록 행에 붙이는 모드 꼬리표. 클래식이면 빈 문자열 */
+export function modeTag(r: Pick<SessionRecord, 'mode' | 'modeScore'>): string {
+  if (r.mode === 'shark') return `상어 · 잡힘 ${r.modeScore ?? 0}회`
+  if (r.mode === 'chase') return `추월 ${r.modeScore ?? 0}명`
+  return ''
 }
 
 export function loadHistory(): SessionRecord[] {

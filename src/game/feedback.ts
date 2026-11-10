@@ -78,14 +78,25 @@ export function toneOf(delta: number): Tone {
 }
 
 /**
+ * 페이스 보트가 없는 모드(상어·추월)에서 쓰는 대체 본문. 페이스 보트를 언급하는 세 문장만 바꾼다.
+ * 문장 자체는 상대가 누구든 통하는 말이다.
+ */
+const NEUTRAL_BODY: Record<string, string> = {
+  '페이스 보트가 따라오느라 바빠요. 정말 멋져요.': '뒤는 돌아보지 않아도 돼요. 정말 멋져요.',
+  '페이스 보트와 나란히. 이게 바로 실력이에요.': '목표 선에 딱 붙어 가요. 이게 바로 실력이에요.',
+  '한 스트로크씩 다리로 강하게, 페이스를 조금씩 올려 봐요. 페이스 보트 금방 보여요.': '한 스트로크씩 다리로 강하게, 페이스를 조금씩 올려 봐요. 금방 돌아와요.',
+}
+
+/**
  * @param w   최근 구간 통계
- * @param gap 페이스 보트 대비 거리차 (m). +면 앞섬
+ * @param gap 상대(페이스 보트·상어·라이벌) 대비 거리차 (m). +면 앞섬
  * @param idx 몇 번째 체크포인트인지 — 문구를 돌려쓰기 위한 인덱스
  * @param nextStep 다음에 올 구간 이름 (있으면 예고를 덧붙인다)
  * @param elapsedSec 지금까지 저은 시간 (초). 있으면 "10분 돌파!"처럼 지나온 길을 먼저 짚어 준다
+ * @param actor gap이 누구와의 차이인지 — 카드 타일의 라벨. 기본은 페이스 보트
  */
 export function buildFeedback(
-  w: WindowStats, gap: number, idx: number, nextStep?: string, elapsedSec?: number,
+  w: WindowStats, gap: number, idx: number, nextStep?: string, elapsedSec?: number, actor = '페이스 보트',
 ): Feedback {
   const windowLabel = w.seconds >= 60
     ? `최근 ${Math.round(w.seconds / 60)}분`
@@ -95,7 +106,7 @@ export function buildFeedback(
   const pool = LINES[tone]
   const pick = pool[idx % pool.length]!
 
-  let body = pick.body
+  let body = actor === '페이스 보트' ? pick.body : (NEUTRAL_BODY[pick.body] ?? pick.body)
   if (elapsedSec !== undefined && elapsedSec >= 60) {
     body = `${Math.round(elapsedSec / 60)}분 돌파! 최근 ${Math.round(w.distance).toLocaleString('ko-KR')}m를 저었어요. ${body}`
   }
@@ -111,7 +122,7 @@ export function buildFeedback(
     stats: [
       [windowLabel, fmt(w.split)],
       ['목표', `${fmt(w.targetSplit)} (${sign}${Math.abs(delta).toFixed(1)}s)`],
-      ['페이스 보트', `${gap >= 0 ? '+' : ''}${Math.round(gap)}m`],
+      [actor, `${gap >= 0 ? '+' : ''}${Math.round(gap)}m`],
     ],
   }
 }

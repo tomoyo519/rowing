@@ -351,6 +351,21 @@ export const COLORS_PACE: RigColors = {
   hair: '#4a4f57', oar: '#6d7885', blade: '#828d9a',
 }
 
+/**
+ * 추월 레이스의 라이벌 — 두 벌을 번갈아 쓴다 (추월당한 배가 뒤로 멀어지는 동안 다음 라이벌이 앞에 선다).
+ * 진홍과 보라: 플레이어의 흰색·페이스 보트의 회색·고스트의 금색과 겹치지 않는다.
+ */
+export const COLORS_RIVALS: RigColors[] = [
+  {
+    hull: '#8e1d2c', trim: '#f2d6c4', jersey: '#e2475a', shorts: '#3a1a22', skin: '#d9a378',
+    hair: '#1b1410', oar: '#2a1b1e', blade: '#e2475a',
+  },
+  {
+    hull: '#3b2a6e', trim: '#ded7f5', jersey: '#8f7bea', shorts: '#241a44', skin: '#f0c9a8',
+    hair: '#5a3b22', cap: '#3b2a6e', oar: '#221a3a', blade: '#8f7bea',
+  },
+]
+
 const UP = new THREE.Vector3(0, 1, 0)
 const _a = new THREE.Vector3()
 const _b = new THREE.Vector3()

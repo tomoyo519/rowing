@@ -1,8 +1,9 @@
 import type { Course } from '../game/courses'
 import type { Metrics } from '../game/state'
 import {
-  localPathPoint, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET, type CoursePath,
+  localPathPoint, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET, SHARK_LANE_OFFSET, type CoursePath,
 } from '../game/coursePath'
+import { gameModeById, RIVAL_PASS_MARGIN, SHARK_BITE_REACH, type GameModeId } from '../game/modes'
 import {
   paceGaugeBar, paceGaugeState, paceGaugeTicks, paceGaugeTolerance, type PaceGaugeState,
 } from '../game/paceGauge'
@@ -53,6 +54,8 @@ export class RaceHud {
   private lastMiniMapAt = -1
   private lastPhase = 0
   private hasGhost = false
+  /** 점수 칩이 바뀔 때 한 번 튀게 하기 위한 직전 값 */
+  private lastScore = -1
 
   constructor() {
     this.buildGaugeTicks()
@@ -77,7 +80,7 @@ export class RaceHud {
   }
 
   /** 레이스 시작 — 코스 띠를 그리고 캐시를 비운다 */
-  start(course: Course, path: CoursePath, total: number, hasGhost: boolean) {
+  start(course: Course, path: CoursePath, total: number, hasGhost: boolean, mode: GameModeId = 'classic') {
     this.course = course
     this.path = path
     this.total = total
@@ -93,8 +96,20 @@ export class RaceHud {
     this.stepTotal = 0
     this.lastMiniMapAt = -1
     this.lastPhase = 0
+    this.lastScore = -1
     $('ghost-gap').classList.toggle('on', hasGhost)
-    $('mini-legend').textContent = hasGhost ? '▲ 나 · ● 페이스 보트 · ○ 내 최고' : ''
+    // 차이 칩은 모드의 상대(페이스 보트·상어·라이벌)를 가리킨다. 미니맵 표식도 모양이 다르다
+    const actor = mode === 'shark' ? '◆ 상어' : mode === 'chase' ? '● 라이벌' : '● 페이스 보트'
+    $('mini-legend').textContent = mode !== 'classic' || hasGhost
+      ? `▲ 나 · ${actor}${hasGhost ? ' · ○ 내 최고' : ''}`
+      : ''
+    this.setText('gap-k', mode === 'shark' ? '상어까지' : gameModeById(mode).actor)
+    $('mode-chip').classList.toggle('on', mode !== 'classic')
+    $('mode-chip').classList.remove('bump')
+    this.setText('mode-chip-k', mode === 'shark' ? '잡힘' : mode === 'chase' ? '추월' : '')
+    const veil = $('danger-veil')
+    veil.style.setProperty('--danger', '0')
+    veil.classList.remove('close')
     this.setText('route-total', `${(total / 1000).toFixed(1)} km`)
     this.renderProfile()
   }
@@ -203,9 +218,17 @@ export class RaceHud {
     this.setText('pg-delta-n', g.state === 'idle' ? '—' : `${g.delta > 0 ? '+' : '−'}${whole}`)
     this.setText('pg-word', g.state === 'behind' ? '느림' : g.state === 'ahead' ? '빠름' : g.state === 'ok' ? '유지' : '')
     const gap = Math.round(m.gap)
-    const boat = gap >= 0 ? `페이스 보트보다 ${gap}m 앞` : `페이스 보트보다 ${Math.abs(gap)}m 뒤`
+    // 게이지 아래 한 줄은 모드의 상대와의 거리다
+    const boat = m.shark
+      ? `상어가 ${Math.round(m.shark.gap)}m 뒤${m.shark.state === 'surge' ? ' · 덮치는 중!' : m.shark.state === 'warn' ? ' · 곧 덮칩니다' : ''}`
+      : m.rival
+        ? (m.rival.gap >= 0
+          ? `${m.rival.name}보다 ${Math.round(m.rival.gap)}m 앞 · 추월까지 ${Math.max(0, Math.ceil(RIVAL_PASS_MARGIN - m.rival.gap))}m`
+          : `${m.rival.name}보다 ${Math.round(-m.rival.gap)}m 뒤${m.rival.contesting ? ' · 버티는 중!' : ''}`)
+        : gap >= 0 ? `페이스 보트보다 ${gap}m 앞` : `페이스 보트보다 ${Math.abs(gap)}m 뒤`
+    const idleMain = m.shark ? '상어보다 빨리 저으세요' : m.rival ? '라이벌을 따라잡으세요' : '페이스 보트를 따라가세요'
     this.setText('pg-msg-main', g.state === 'idle'
-      ? (running ? '노를 저어 목표 선까지 끌어올리세요' : '페이스 보트를 따라가세요')
+      ? (running ? '노를 저어 목표 선까지 끌어올리세요' : idleMain)
       : g.state === 'behind' ? (g.delta > 60 ? '목표까지 한참 남음 · 더 세게 당기세요' : '더 세게 당기세요')
         : g.state === 'ok' ? '목표 페이스 유지 중' : '여유 있음 · 이대로')
     this.setText('pg-msg-sub', running ? boat : '')
@@ -244,9 +267,42 @@ export class RaceHud {
     const targetLeft = m.remaining <= 0 ? 0 : Math.max(0, Math.round(this.total - m.distance + m.gap))
     this.setText('s-remaining', `${formatClock(m.remaining)} 남음 · 목표 약 ${targetLeft.toLocaleString('en-US')}m`)
 
-    // ── 페이스 보트·최고 기록 차이 ───────────────────────
-    this.setText('s-gap', `${gap >= 0 ? '▲' : '▼'} ${Math.abs(gap)} m`)
-    this.setClass('gap-chip', `gap-chip glass ${gap >= 0 ? 'ahead' : 'behind'}`)
+    // ── 상대(페이스 보트·상어·라이벌)·최고 기록 차이 ─────────
+    if (m.shark) {
+      // 상어까지의 거리. 15m 안이면 위험 — ▼와 붉은 숫자. 멀면 ▲와 초록
+      const sg = Math.round(m.shark.gap)
+      const safe = m.shark.gap > 15
+      this.setText('s-gap', `${safe ? '▲' : '▼'} ${sg} m`)
+      this.setClass('gap-chip', `gap-chip glass ${safe ? 'ahead' : 'behind'}`)
+    } else if (m.rival) {
+      const rg = Math.round(m.rival.gap)
+      this.setText('s-gap', `${rg >= 0 ? '▲' : '▼'} ${Math.abs(rg)} m`)
+      this.setClass('gap-chip', `gap-chip glass ${rg >= 0 ? 'ahead' : 'behind'}`)
+    } else {
+      this.setText('s-gap', `${gap >= 0 ? '▲' : '▼'} ${Math.abs(gap)} m`)
+      this.setClass('gap-chip', `gap-chip glass ${gap >= 0 ? 'ahead' : 'behind'}`)
+    }
+    // 점수 칩: 잡힌 횟수 / 추월 수. 바뀔 때 한 번 튄다
+    const score = m.shark ? m.shark.caught : m.rival ? m.rival.passed : -1
+    if (score >= 0) {
+      this.setText('mode-chip-v', m.shark ? `${score}회` : `${score}명`)
+      if (this.lastScore >= 0 && score !== this.lastScore) {
+        const chip = $('mode-chip')
+        chip.classList.remove('bump')
+        void chip.offsetWidth
+        chip.classList.add('bump')
+      }
+      this.lastScore = score
+    }
+    // 상어가 가까울수록 화면 가장자리가 붉어지고, 절반 안으로 들어오면 맥동한다 — 가까울수록 빠르게
+    if (m.shark) {
+      const veil = $('danger-veil')
+      const danger = running ? m.shark.danger : 0
+      veil.style.setProperty('--danger', danger.toFixed(2))
+      const close = danger > 0.5
+      if (close) veil.style.setProperty('--pulse', `${(0.35 + (1 - danger) * 1.2).toFixed(2)}s`)
+      veil.classList.toggle('close', close)
+    }
     if (m.ghostGap !== null) {
       const gg = Math.round(m.ghostGap)
       this.setText('s-ghost-gap', `${gg >= 0 ? '▲' : '▼'} ${Math.abs(gg)} m`)
@@ -387,11 +443,47 @@ export class RaceHud {
       if (fill) { ctx.fillStyle = fill; ctx.fill() }
       else { ctx.lineWidth = 1.6; ctx.strokeStyle = '#fff'; ctx.stroke() }
     }
-    // 페이스 보트 — 찬 점
-    const pace = localPathPoint(path, distance, -m.gap, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET)
-    const paceX = center + pace.z * scaleSide
-    const paceY = baseY - pace.x * scaleForward
-    if (paceY > -8 && paceY < size + 8) ringed(paceX, paceY, 4, '#ffffff')
+    if (m.shark) {
+      // 상어 — 앞을 향한 마름모(지느러미). 어두운 몸에 흰 테두리
+      const nose = localPathPoint(path, distance, -(m.shark.gap + SHARK_BITE_REACH), SHARK_LANE_OFFSET, PLAYER_LANE_OFFSET)
+      const sx = center + nose.z * scaleSide
+      const sy = baseY - nose.x * scaleForward
+      if (sy > -8 && sy < size + 8) {
+        ctx.beginPath()
+        ctx.moveTo(sx, sy - 6)
+        ctx.lineTo(sx + 4, sy + 1)
+        ctx.lineTo(sx, sy + 6)
+        ctx.lineTo(sx - 4, sy + 1)
+        ctx.closePath()
+        ctx.lineJoin = 'round'
+        ctx.lineWidth = 3.5
+        ctx.strokeStyle = MINI_RING
+        ctx.stroke()
+        ctx.fillStyle = '#5a6775'
+        ctx.fill()
+        ctx.lineWidth = 1.4
+        ctx.strokeStyle = '#fff'
+        ctx.stroke()
+      }
+    } else if (m.rival) {
+      // 라이벌 — 찬 점 (페이스 보트 자리). 지나간 라이벌은 작은 점으로 뒤에 남는다
+      const rival = localPathPoint(path, distance, -m.rival.gap, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET)
+      const rx = center + rival.z * scaleSide
+      const ry = baseY - rival.x * scaleForward
+      if (ry > -8 && ry < size + 8) ringed(rx, ry, 4, '#ffffff')
+      if (m.rival.previous) {
+        const prev = localPathPoint(path, distance, -m.rival.previous.gap, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET)
+        const px = center + prev.z * scaleSide
+        const py = baseY - prev.x * scaleForward
+        if (py > -8 && py < size + 8) ringed(px, py, 2.5, 'rgba(255,255,255,.6)')
+      }
+    } else {
+      // 페이스 보트 — 찬 점
+      const pace = localPathPoint(path, distance, -m.gap, PACE_LANE_OFFSET, PLAYER_LANE_OFFSET)
+      const paceX = center + pace.z * scaleSide
+      const paceY = baseY - pace.x * scaleForward
+      if (paceY > -8 && paceY < size + 8) ringed(paceX, paceY, 4, '#ffffff')
+    }
     // 지난 최고 기록 — 빈 고리
     if (this.hasGhost && m.ghostGap !== null) {
       const ghost = localPathPoint(path, distance, -m.ghostGap, PLAYER_LANE_OFFSET, PLAYER_LANE_OFFSET)
@@ -413,7 +505,12 @@ export class RaceHud {
     ctx.fill()
     ctx.restore()
 
-    canvas.setAttribute('aria-label', `앞으로 ${Math.max(0, Math.round(this.total - distance))}m, 페이스 보트 ${m.gap >= 0 ? '+' : ''}${Math.round(m.gap)}m`)
+    const actorLabel = m.shark
+      ? `상어 ${Math.round(m.shark.gap)}m 뒤`
+      : m.rival
+        ? `${m.rival.name} ${m.rival.gap >= 0 ? '+' : ''}${Math.round(m.rival.gap)}m`
+        : `페이스 보트 ${m.gap >= 0 ? '+' : ''}${Math.round(m.gap)}m`
+    canvas.setAttribute('aria-label', `앞으로 ${Math.max(0, Math.round(this.total - distance))}m, ${actorLabel}`)
     const caption = $('mini-caption')
     const text = `${(distance / 1000).toFixed(1)} / ${(this.total / 1000).toFixed(1)} km`
     if (this.text.get('mini-caption') !== text) {

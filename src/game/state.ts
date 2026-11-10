@@ -5,6 +5,9 @@ import type { WindowStats } from './feedback'
 import type { Course } from './courses'
 import type { RowerSample } from '../types'
 import type { GhostTrack } from './ghost'
+import {
+  RivalChase, SharkChase, type GameModeId, type ModeEvent, type RivalView, type SharkView,
+} from './modes'
 
 /**
  * idle → (카운트다운) → armed → (첫 스트로크) → running → finished
@@ -148,6 +151,12 @@ export interface Metrics {
   speedSource: SpeedSource
   /** 기기 페이스·파워가 거리와 계속 어긋나 버리고 있는지 (단위가 틀린 펌웨어) */
   paceDistrusted: boolean
+  /** 플레이 모드 */
+  mode: GameModeId
+  /** 상어 추격 모드의 상어. 다른 모드면 null */
+  shark: SharkView | null
+  /** 추월 레이스 모드의 라이벌. 다른 모드면 null */
+  rival: RivalView | null
 }
 
 export type StallReason = null | 'link' | 'nodata'
@@ -224,6 +233,12 @@ export class Session {
   private lastIntegralAt: number | null = null
   /** 로잉머신과 별개로 연결한 심박 센서의 마지막 값. 기기 FTMS 심박보다 우선한다. */
   private externalHeartRate: { bpm: number; at: number } | null = null
+  /** 상어 추격 모드의 상어. 목표 속도로 쫓아오며 가끔 덮친다 */
+  readonly shark: SharkChase | null
+  /** 추월 레이스 모드의 라이벌 */
+  readonly rival: RivalChase | null
+  /** 모드가 내보낸 사건. main.ts가 프레임마다 가져가 소리·알림으로 바꾼다 */
+  private modeEvents: ModeEvent[] = []
 
   constructor(
     public course: Course,
@@ -233,8 +248,13 @@ export class Session {
     public ghost: GhostTrack | null = null,
     /** 개발용: 날씨 seed를 고정한다. 없으면 매 운동 달라진다. */
     weatherSeed?: string,
+    /** 플레이 모드. 기본은 페이스 보트만 있는 클래식 */
+    readonly mode: GameModeId = 'classic',
   ) {
     this.weatherSeed = weatherSeed ?? `${course.id}:${Date.now()}:${Math.random()}`
+    // 상어의 덮치는 시각과 라이벌의 버릇은 날씨 seed에서 나온다 — 같은 seed면 같은 레이스가 재현된다
+    this.shark = mode === 'shark' ? new SharkChase(this.weatherSeed) : null
+    this.rival = mode === 'chase' ? new RivalChase(this.weatherSeed) : null
   }
 
   start() {
@@ -256,6 +276,18 @@ export class Session {
     this.stoppedForStagnation = false
     // 페이스 신뢰 판정(paceDistrusted)은 기기에 대한 지식이라 지우지 않는다 — 카운트다운 중 들어온 샘플로 이미 판정돼 있을 수 있다.
     this.speedSource = 'none'
+    // 상어·라이벌도 출발선에서 함께 기다린다 (대기 중엔 update()가 움직이지 않는다)
+    this.shark?.start(0)
+    this.rival?.start(0)
+    this.modeEvents.length = 0
+  }
+
+  /** 마지막으로 가져간 뒤 쌓인 모드 사건. 가져가면 비운다. */
+  drainModeEvents(): ModeEvent[] {
+    if (!this.modeEvents.length) return []
+    const out = this.modeEvents
+    this.modeEvents = []
+    return out
   }
 
   /**
@@ -663,6 +695,9 @@ export class Session {
     // 페이스 보트는 구간 강도에 따라 빨라졌다 느려진다. 출발은 start()에서 이미 목표 속도로 맞춰 뒀다.
     this.paceSpeed += (this.paceTarget() - this.paceSpeed) * (1 - Math.exp(-dt / PACE_INERTIA_SEC))
     this.paceDistance += this.paceSpeed * dt
+    // 상어·라이벌은 페이스 보트와 같은 목표 속도를 기준으로 움직인다 — 구간 강도가 그대로 먹는다
+    if (this.shark) this.modeEvents.push(...this.shark.update(dt, this.elapsed, this.paceTarget(), this.boat.distance))
+    if (this.rival) this.modeEvents.push(...this.rival.update(dt, this.elapsed, this.paceTarget(), this.boat.distance))
 
     const sec = Math.floor(this.elapsed)
     if (sec !== this.lastTrackAt) {
@@ -746,6 +781,9 @@ export class Session {
       ghostGap: ghostDistance === null ? null : d - ghostDistance,
       speedSource: this.speedSource,
       paceDistrusted: this.paceDistrusted,
+      mode: this.mode,
+      shark: this.shark ? this.shark.view(d) : null,
+      rival: this.rival ? this.rival.view(d) : null,
     }
   }
 

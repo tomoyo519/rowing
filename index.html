@@ -241,6 +241,9 @@
   .tier b { display: block; font-size: 15px; margin-bottom: 3px; }
   .tier span { font-size: 11px; color: var(--muted); font-family: var(--num); }
   .tier-hint { color: var(--muted); font-size: 13px; text-align: center; margin: 0 0 28px; }
+  /* 플레이 모드 — 목표 페이스 티어와 같은 알약 버튼. 셋뿐이라 폭을 제한한다 */
+  .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; max-width: 640px; }
+  .mode-hint { text-align: left; max-width: 640px; line-height: 1.55; }
   .avatars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 28px; max-width: 420px; }
   .avatar b { font-size: 17px; }
   .hr-row {
@@ -430,6 +433,52 @@
   .gap-chip.ghost.on { display: flex; }
   .gap-chip.ghost small { color: var(--gold); }
   .gap-chip.ghost b { font-size: 16px; }
+  /* 모드 점수 칩: 잡힌 횟수·추월 수. 상태색을 입지 않는다 — 많고 적음이 좋고 나쁨이 아니다 */
+  .gap-chip.score { display: none; padding: 4px 12px; }
+  .gap-chip.score.on { display: flex; }
+  .gap-chip.score b { font-size: 16px; }
+  .gap-chip.score.bump b { animation: beat-pop .3s cubic-bezier(.2,.9,.3,1); }
+
+  /* ── 상어 위험 가장자리 ── 가까울수록 붉게, 코앞이면 빠르게 맥동. 블러·필터 없이 inset 그림자만 */
+  .danger-veil {
+    position: absolute; inset: 0; pointer-events: none; z-index: 0;
+    opacity: var(--danger, 0); transition: opacity .3s;
+    box-shadow: inset 0 0 110px 24px rgba(255, 98, 82, .62);
+  }
+  .danger-veil.close { animation: danger-pulse var(--pulse, 1s) ease-in-out infinite; }
+  @keyframes danger-pulse { 50% { opacity: calc(var(--danger, 0) * .4); } }
+
+  /* ── 뒤 보기 틀 (상어 모드) ── 안쪽은 비어 있고 3D가 그 자리에 그려진다. 코스 띠 아래 가운데 */
+  .rear-view {
+    position: absolute; left: 50%; top: calc(var(--safe-t) + 120px); transform: translateX(-50%);
+    width: min(26vw, 320px); aspect-ratio: 2 / 1; display: none;
+    border: 2px solid rgba(255,255,255,.42); border-radius: 12px;
+    box-shadow: 0 8px 26px rgba(0,0,0,.35), inset 0 0 0 1px rgba(0,0,0,.35);
+  }
+  .rear-view.on { display: block; }
+  .rear-view span {
+    position: absolute; left: 8px; top: 6px; font-size: 10px; font-weight: 700; color: rgba(255,255,255,.85);
+    padding: 1px 6px; border-radius: 5px; background: rgba(6,13,20,.6);
+  }
+
+  /* ── 모드 사건 알림 ── 상어 경고·물림, 라이벌 버팀·추월. 2.6초 뒤 사라진다 */
+  .mode-toast {
+    position: absolute; left: 50%; top: 38%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    width: max-content; max-width: calc(100vw - 32px); padding: 13px 26px; text-align: center; white-space: nowrap;
+    border-radius: var(--r-md); background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--glass-hi);
+    color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,.6);
+    opacity: 0; pointer-events: none; transition: opacity .3s; z-index: 3;
+  }
+  .mode-toast.on { opacity: 1; animation: toast-in .32s cubic-bezier(.2,.9,.3,1); }
+  @keyframes toast-in { from { transform: translateX(-50%) translateY(10px) scale(.96); opacity: 0; } }
+  .mode-toast b { font-size: 28px; font-weight: 800; letter-spacing: -.01em; }
+  .mode-toast span { font-size: 13px; color: var(--ink-2); font-weight: 600; }
+  .mode-toast span:empty { display: none; }
+  /* 톤: 물림·버팀은 '뒤처짐' 빨강, 추월은 '앞섬' 초록, 경고는 흰색에 맥동 고리 */
+  .mode-toast.danger { border-color: rgba(255,98,82,.6); } .mode-toast.danger b { color: var(--st-behind-ink); }
+  .mode-toast.win { border-color: rgba(75,198,122,.55); } .mode-toast.win b { color: var(--st-ahead-ink); }
+  .mode-toast.warn.on { animation: toast-in .32s cubic-bezier(.2,.9,.3,1), start-hint-pulse 1s ease-in-out infinite; }
 
   /* ── 5분 피드백 ── 위쪽 띠에 띄운다 — 보트와 숫자를 가리지 않는다 */
   .fb {
@@ -580,6 +629,10 @@
     .pc-side { padding-bottom: 80px; }
     .mini-bezel { width: 110px; height: 110px; }
     .landmark { top: 40%; }
+    .mode-toast { top: 34%; } .mode-toast b { font-size: 22px; }
+    .rear-view { top: calc(var(--safe-t) + 132px); width: min(42vw, 300px); }
+    /* 세로 화면에선 뒤 보기 창이 시뮬레이터 슬라이더 자리와 겹친다 — 슬라이더를 창 아래로 내린다 */
+    .rear-view.on ~ .simctl { top: calc(var(--safe-t) + 300px); }
     .fb { padding-top: calc(var(--safe-t) + 150px); }
   }
 
@@ -591,7 +644,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .pace-gauge.enter, .start-hint, .linkbar .dot, .stat.live .heart, .cadence strong.beat, .hero.settle, .pg-target b.settle, .hr-row.live .heart,
-    .cd-wrap.pop .cd-ring circle, .cd-num.pop, .fb-card { animation: none !important; }
+    .cd-wrap.pop .cd-ring circle, .cd-num.pop, .fb-card, .danger-veil, .mode-toast, .gap-chip.score.bump b { animation: none !important; }
     .pg-fill, .seg-bar i { transition: none; }
   }
 
@@ -642,6 +695,7 @@
   .hrow .sub { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 9px; font-size: 12.5px; color: var(--muted); }
   .hrow .sub b { color: var(--text); font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; }
   .hrow .pb { color: var(--gold); font-size: 11px; font-weight: 700; margin-left: 6px; }
+  .hrow .mode-tag { font-size: 11px; color: var(--muted); font-weight: 600; margin-left: 6px; padding: 2px 7px; border-radius: 5px; background: rgba(255,255,255,.06); }
   .hrow .dnf { color: var(--muted); font-size: 11px; margin-left: 6px; }
   .hrow-detail { display: none; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
   .hrow.open .hrow-detail { display: block; }
@@ -740,6 +794,11 @@
     <div class="tiers" id="tiers"></div>
     <p class="tier-hint" id="tier-hint"></p>
 
+    <!-- 플레이 모드: 코스 위에 얹는 게임 요소. 상어·라이벌은 목표 페이스를 기준으로 움직여 코스 강도가 그대로 적용된다 -->
+    <h2>플레이 모드</h2>
+    <div class="modes" id="modes" role="group" aria-label="플레이 모드"></div>
+    <p class="tier-hint mode-hint" id="mode-hint"></p>
+
     <h2>코스</h2>
     <div class="courses" id="courses"></div>
   </div>
@@ -833,10 +892,19 @@
           <div class="mini-caption num" id="mini-caption">0.0 / 0.0 km</div>
           <div class="mini-legend" id="mini-legend"></div>
         </div>
-        <div class="gap-chip glass" id="gap-chip"><small>페이스 보트</small><b class="num" id="s-gap">—</b></div>
+        <div class="gap-chip glass" id="gap-chip"><small id="gap-k">페이스 보트</small><b class="num" id="s-gap">—</b></div>
+        <!-- 상어 모드의 잡힌 횟수 / 추월 모드의 추월 수 -->
+        <div class="gap-chip glass score" id="mode-chip"><small id="mode-chip-k"></small><b class="num" id="mode-chip-v">0</b></div>
         <div class="gap-chip glass ghost" id="ghost-gap"><small>내 최고</small><b class="num" id="s-ghost-gap">—</b></div>
       </div>
     </div>
+
+    <!-- 상어가 가까울수록 화면 가장자리가 붉게 맥동한다 (블러 없음) -->
+    <div class="danger-veil" id="danger-veil"></div>
+    <!-- 상어 모드의 뒤 보기 틀. 3D는 이 요소의 자리에 작은 뷰포트로 한 번 더 그린다 (view.ts attachRearView) -->
+    <div class="rear-view" id="rear-view" aria-label="뒤 보기"><span>뒤</span></div>
+    <!-- 모드 사건 알림: 상어 경고·물림, 라이벌 버팀·추월 -->
+    <div class="mode-toast" id="mode-toast" aria-live="assertive"><b id="mode-toast-t"></b><span id="mode-toast-s"></span></div>
 
     <div class="linkbar" id="linkbar">
       <span class="dot"></span>
