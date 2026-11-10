@@ -109,6 +109,56 @@ function bleLogText() {
   })].join('\n')
 }
 
+/** 세션 궤적 요약 — 10초마다 한 줄. 페이스 보트와의 차이·속도 출처를 같이 남겨 실기기 문제를 나중에 되짚는다 */
+function sessionTraceText(): string {
+  if (!session) return '(세션 없음)'
+  const m = session.metrics()
+  const head = `session course=${session.course.id} base=${session.baseSplit}s phase=${session.phase} elapsed=${m.elapsed.toFixed(1)} dist=${m.distance.toFixed(1)} paceBoat=${session.paceDistance.toFixed(1)} gap=${m.gap.toFixed(1)} speedSource=${m.speedSource} paceDistrusted=${m.paceDistrusted} sim=${source instanceof MockSource}`
+  const rows = session.track
+    .filter(x => x.t % 10 === 0)
+    .map(x => `${x.t}\t${x.d.toFixed(0)}\t${isFinite(x.split) ? x.split.toFixed(1) : '-'}\t${x.spm.toFixed(1)}\t${x.power.toFixed(0)}`)
+  return [head, 't\td\tsplit\tspm\tW', ...rows].join('\n')
+}
+
+/**
+ * 진단 로그 + 세션 궤적을 서버(/api/log → Vercel Blob)에 올린다.
+ * 실기기는 집에 있고 확인은 다른 곳에서 하므로, 복사·붙여넣기 없이도 로그가 남게 한다.
+ */
+let uploadBusy = false
+async function uploadBleLog(reason: string): Promise<boolean> {
+  if (uploadBusy) return false
+  uploadBusy = true
+  try {
+    const body = `${bleLogText()}\n\n--- ${reason} ---\n${sessionTraceText()}`
+    const res = await fetch('/api/log', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain; charset=utf-8', 'x-makerowing': '1' },
+      body,
+    })
+    const data = await res.json().catch(() => ({})) as { url?: string; error?: string; hint?: string }
+    if (!res.ok) {
+      appendBleLog({ at: Date.now(), level: 'info', code: 'log.upload.failed', message: `서버 전송 실패 (${res.status} ${data.error ?? ''})`, detail: data.hint })
+      return false
+    }
+    appendBleLog({ at: Date.now(), level: 'info', code: 'log.upload.ok', message: `진단 로그를 서버에 보냈습니다 (${reason})`, detail: data.url })
+    return true
+  } catch (e) {
+    appendBleLog({ at: Date.now(), level: 'info', code: 'log.upload.failed', message: '서버 전송 실패 (네트워크)', detail: e instanceof Error ? e.message : String(e) })
+    return false
+  } finally {
+    uploadBusy = false
+  }
+}
+
+$('btn-log-send').addEventListener('click', async () => {
+  const button = $<HTMLButtonElement>('btn-log-send')
+  button.disabled = true
+  button.textContent = '보내는 중…'
+  const ok = await uploadBleLog('manual')
+  button.textContent = ok ? '보냈습니다' : '전송 실패'
+  window.setTimeout(() => { button.textContent = '서버로 보내기'; button.disabled = false }, 1_600)
+})
+
 $('btn-log-copy').addEventListener('click', async () => {
   const button = $<HTMLButtonElement>('btn-log-copy')
   try {
@@ -461,6 +511,8 @@ let lastStallReason: StallReason = null
 let lastStepIntensity = 1
 /** 출발 대기 → 출발 전환을 잡기 위한 직전 세션 상태 */
 let lastPhase: Phase | null = null
+/** 레이스 90초 시점 자동 업로드를 세션당 한 번만 */
+let earlyUploadDone = false
 /** 기기 페이스를 버리고 거리로 잰 속도로 바꾼 사실을 진단 로그에 한 번만 남기기 위한 직전 값 */
 let lastPaceDistrusted = false
 
@@ -477,6 +529,7 @@ async function startRace() {
   // 개발 중에는 `?weather=seed`로 날씨 일정을 고정해 같은 하늘을 다시 볼 수 있다.
   const weatherSeed = new URLSearchParams(location.search).get('weather')
   session = new Session(selectedCourse, selectedTier.split, ghost, weatherSeed ? `${selectedCourse.id}:${weatherSeed}` : undefined)
+  earlyUploadDone = false
   const knownHr = (hrSensor?.status === 'connected' ? lastHr : null) ?? rowerHr
   if (knownHr) session.setExternalHeartRate(knownHr.bpm, knownHr.at)
   lastPaceDistrusted = false
@@ -722,6 +775,10 @@ function updateHud(dt: number) {
   }
   if (lastPhase === 'armed' && session.phase === 'running') cues.launch()
   lastPhase = session.phase
+  if (!earlyUploadDone && session.phase === 'running' && m.elapsed >= 90 && !(source instanceof MockSource)) {
+    earlyUploadDone = true
+    void uploadBleLog('race-90s')
+  }
 
   // 숫자·게이지·코스 띠·미니맵
   hud.update(m, session.stroke, session.phase === 'running', dt)
@@ -877,6 +934,7 @@ function showSummary() {
     .map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`)
     .join('')
 
+  if (!(source instanceof MockSource)) void uploadBleLog(completed ? 'finished' : 'quit')
   show('screen-summary')
   // 차트는 폭을 재서 그리므로 화면이 보인 뒤에 그린다
   const curve = thinCurve(s.track, 30)

@@ -30,6 +30,7 @@
     "wrangler": "^4.126.0"
   },
   "dependencies": {
+    "@vercel/blob": "^2.9.0",
     "three": "^0.185.1"
   }
 }
