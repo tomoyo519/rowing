@@ -8,7 +8,7 @@ import {
   paceGaugeBar, paceGaugeState, paceGaugeTicks, paceGaugeTolerance, type PaceGaugeState,
 } from '../game/paceGauge'
 import { formatClock, formatSplitShort } from '../game/physics'
-import { profileStripSvg } from './charts'
+import { profileStripSvg, type StripMarker } from './charts'
 
 /**
  * 레이스 HUD의 숫자·그래프 렌더링.
@@ -38,6 +38,15 @@ function ema(prev: number, next: number, dt: number, tau: number) {
   return prev + (next - prev) * (1 - Math.exp(-dt / tau))
 }
 
+/** 재미 요소가 미니맵에 올리는 표식. along은 내 보트 기준 앞(+)으로 m */
+export interface ArcadeMarkers {
+  /** 파워 구간 시작선(soon) 또는 끝선(active)까지 */
+  zoneAlong: number | null
+  zoneActive: boolean
+  /** 백조 떼가 건너는 선까지. 없으면 null */
+  swanAlong: number | null
+}
+
 export class RaceHud {
   private course: Course | null = null
   private path: CoursePath | null = null
@@ -56,6 +65,12 @@ export class RaceHud {
   private hasGhost = false
   /** 점수 칩이 바뀔 때 한 번 튀게 하기 위한 직전 값 */
   private lastScore = -1
+  /** 코스 띠에 그릴 파워 구간 (arcade.ts가 준다) */
+  private stripMarkers: readonly StripMarker[] = []
+  /** 미니맵에 그릴 재미 요소 표식 — 파워 구간 출입구(앞으로 m)와 백조 떼 선 */
+  private markers: ArcadeMarkers = { zoneAlong: null, zoneActive: false, swanAlong: null }
+  /** 고스트 칩·범례의 이름. 친구 고스트면 바뀐다 */
+  private ghostLabel = '내 최고'
 
   constructor() {
     this.buildGaugeTicks()
@@ -97,12 +112,12 @@ export class RaceHud {
     this.lastMiniMapAt = -1
     this.lastPhase = 0
     this.lastScore = -1
+    this.stripMarkers = []
+    this.markers = { zoneAlong: null, zoneActive: false, swanAlong: null }
+    this.ghostLabel = '내 최고'
+    this.mode = mode
     $('ghost-gap').classList.toggle('on', hasGhost)
-    // 차이 칩은 모드의 상대(페이스 보트·상어·라이벌)를 가리킨다. 미니맵 표식도 모양이 다르다
-    const actor = mode === 'shark' ? '◆ 상어' : mode === 'chase' ? '● 라이벌' : '● 페이스 보트'
-    $('mini-legend').textContent = mode !== 'classic' || hasGhost
-      ? `▲ 나 · ${actor}${hasGhost ? ' · ○ 내 최고' : ''}`
-      : ''
+    this.renderLegend()
     this.setText('gap-k', mode === 'shark' ? '상어까지' : gameModeById(mode).actor)
     $('mode-chip').classList.toggle('on', mode !== 'classic')
     $('mode-chip').classList.remove('bump')
@@ -112,6 +127,36 @@ export class RaceHud {
     veil.classList.remove('close')
     this.setText('route-total', `${(total / 1000).toFixed(1)} km`)
     this.renderProfile()
+  }
+
+  private mode: GameModeId = 'classic'
+
+  /** 차이 칩은 모드의 상대(페이스 보트·상어·라이벌)를 가리킨다. 미니맵 표식도 모양이 다르다 */
+  private renderLegend() {
+    const mode = this.mode
+    const actor = mode === 'shark' ? '◆ 상어' : mode === 'chase' ? '● 라이벌' : '● 페이스 보트'
+    $('mini-legend').textContent = mode !== 'classic' || this.hasGhost
+      ? `▲ 나 · ${actor}${this.hasGhost ? ` · ○ ${this.ghostLabel}` : ''}`
+      : ''
+    const small = $('ghost-gap').querySelector('small')
+    if (small) small.textContent = this.ghostLabel
+  }
+
+  /** 친구 고스트처럼 '내 최고'가 아닌 고스트일 때 칩·범례의 이름을 바꾼다 */
+  setGhostLabel(label: string) {
+    this.ghostLabel = label
+    this.renderLegend()
+  }
+
+  /** 코스 띠에 파워 구간을 그린다. 레이스 시작 뒤 arcade.ts가 부른다 */
+  setStripMarkers(markers: readonly StripMarker[]) {
+    this.stripMarkers = markers
+    this.renderProfile()
+  }
+
+  /** 미니맵 표식 — 매 프레임 arcade.ts가 갱신한다 */
+  setMarkers(markers: ArcadeMarkers) {
+    this.markers = markers
   }
 
   /** 레이스 중 목표 페이스가 바뀌면 페이스 보트의 예상 완주 거리, 곧 결승선이 옮겨진다 */
@@ -139,7 +184,7 @@ export class RaceHud {
     if (!this.course) return
     const host = $('race-profile')
     const width = host.clientWidth || 600
-    host.innerHTML = profileStripSvg(this.course, width)
+    host.innerHTML = profileStripSvg(this.course, width, 24, 240, this.stripMarkers)
   }
 
   private setText(id: string, value: string) {
@@ -430,6 +475,38 @@ export class RaceHud {
         ctx.lineWidth = 3
         ctx.lineCap = 'butt'
         ctx.stroke()
+      }
+    }
+
+    // 파워 구간 출입구: 강을 가로지르는 금색 선. 활성 중엔 끝선, 예고 중엔 시작선
+    const zm = this.markers
+    if (zm.zoneAlong !== null && zm.zoneAlong > -30 && zm.zoneAlong < 440) {
+      const a = mapPoint(zm.zoneAlong, 10), b = mapPoint(zm.zoneAlong, -10)
+      ctx.beginPath()
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
+      ctx.strokeStyle = MINI_RING
+      ctx.lineWidth = 5
+      ctx.lineCap = 'round'
+      ctx.stroke()
+      ctx.strokeStyle = '#ffb648'
+      ctx.lineWidth = zm.zoneActive ? 3 : 2
+      ctx.setLineDash(zm.zoneActive ? [] : [3, 3])
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+    // 백조 떼: 강을 가로지르는 흰 점 넷
+    if (zm.swanAlong !== null && zm.swanAlong > -30 && zm.swanAlong < 440) {
+      for (let i = 0; i < 4; i++) {
+        const p = mapPoint(zm.swanAlong, -7 + i * 4.6)
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2)
+        ctx.fillStyle = MINI_RING
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 1.6, 0, Math.PI * 2)
+        ctx.fillStyle = '#fff'
+        ctx.fill()
       }
     }
 

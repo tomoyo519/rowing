@@ -39,6 +39,10 @@ export interface SessionRecord {
   mode?: GameModeId
   /** 모드 점수 — 상어: 잡힌 횟수, 추월: 추월한 수 */
   modeScore?: number
+  /** 이 세션에서 번 코인 (재미 요소). 없으면 코인이 생기기 전 기록 */
+  coins?: number
+  /** 최장 리듬 콤보 */
+  comboBest?: number
 }
 
 /** 기록 행에 붙이는 모드 꼬리표. 클래식이면 빈 문자열 */

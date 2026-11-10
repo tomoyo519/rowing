@@ -450,6 +450,8 @@ export class Rig {
   get bladeMeshes(): readonly THREE.Mesh[] { return this.oarBlade }
   private collars: THREE.Mesh[] = []
   private splash: THREE.Mesh[] = []
+  /** 물보라 크기·불투명도 배율. 리듬 콤보가 쌓일수록 바깥(view.setSplashBoost)에서 올린다 */
+  splashBoost = 1
   private wake!: THREE.Mesh
   /** 물에 남는 퍼들 — 월드에 남아 뒤로 흘러간다 */
   private puddles: { mesh: THREE.Mesh; life: number }[] = []
@@ -956,9 +958,11 @@ export class Rig {
       const spMat = this.splash[i]!.material as THREE.MeshBasicMaterial
       if (pose.inWater) {
         const power = Math.sin(pose.driveProgress * Math.PI)
+        const boost = this.splashBoost
+        const size = (0.7 + power * 0.9) * boost
         this.splash[i]!.position.set(blade.x, 0.10, blade.z)
-        this.splash[i]!.scale.set(0.7 + power * 0.9, 0.3, 0.7 + power * 0.9)
-        spMat.opacity = 0.3 * power * this.opacity
+        this.splash[i]!.scale.set(size, 0.3 * Math.min(1.6, boost), size)
+        spMat.opacity = Math.min(0.6, 0.3 * power * this.opacity * boost)
       } else {
         spMat.opacity = 0
       }

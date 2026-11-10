@@ -24,6 +24,13 @@ import { loadGhost } from './game/ghost'
 import { createCoursePath, type CoursePath } from './game/coursePath'
 import { GAME_MODES, gameModeById, josa, type GameModeId, type ModeEvent } from './game/modes'
 import type { RowerSource } from './types'
+import { Arcade } from './ui/arcade'
+import { CoxVoice } from './audio/coxVoice'
+import { activeDaily, friendGhostFor, loadSharedGhostFromUrl, renderArcadeSelect, setGarageTier } from './ui/garage'
+import { renderArcadeSummary } from './ui/arcadeSummary'
+import { ghostTrackFrom } from './game/friendGhost'
+import { loadWallet, playerRigColors } from './game/wallet'
+import { COLORS_PLAYER } from './three/rig'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -378,7 +385,21 @@ function goCourseSelect() {
   renderModes()
   renderCourses()
   syncHrRow()
+  // 오늘의 도전·친구 고스트·내 보트(코인 해금)·별명·최대 심박 — src/ui/garage.ts
+  setGarageTier(selectedTier.id)
+  renderArcadeSelect(selectHooks)
   show('screen-course')
+}
+
+/** 코스 선택 화면의 재미 요소(오늘의 도전·친구 고스트)가 선택을 바꿀 때 쓰는 고리 */
+const selectHooks = {
+  current: () => ({ courseId: selectedCourse.id, tierId: selectedTier.id, mode: selectedMode }),
+  pick: (sel: { courseId?: string; tierId?: string; mode?: GameModeId }) => {
+    if (sel.courseId) selectedCourse = COURSES.find(c => c.id === sel.courseId) ?? selectedCourse
+    if (sel.tierId) selectedTier = PACE_TIERS.find(t => t.id === sel.tierId) ?? selectedTier
+    if (sel.mode) { selectedMode = sel.mode; saveMode(sel.mode) }
+    goCourseSelect()
+  },
 }
 
 function renderModes() {
@@ -389,7 +410,7 @@ function renderModes() {
     b.className = 'tier mode' + (m.id === selectedMode ? ' sel' : '')
     b.setAttribute('aria-pressed', String(m.id === selectedMode))
     b.innerHTML = `<b>${m.label}</b><span>${m.hint}</span>`
-    b.addEventListener('click', () => { selectedMode = m.id; saveMode(m.id); renderModes() })
+    b.addEventListener('click', () => { selectedMode = m.id; saveMode(m.id); renderModes(); renderArcadeSelect(selectHooks) })
     el.appendChild(b)
   }
   $('mode-hint').textContent = gameModeById(selectedMode).description
@@ -415,7 +436,7 @@ function renderTiers() {
     const b = document.createElement('button')
     b.className = 'tier' + (t.id === selectedTier.id ? ' sel' : '')
     b.innerHTML = `<b>${t.label}</b><span>${formatSplitShort(t.split)}</span>`
-    b.addEventListener('click', () => { selectedTier = t; renderTiers(); renderCourses() })
+    b.addEventListener('click', () => { selectedTier = t; renderTiers(); renderCourses(); setGarageTier(t.id); renderArcadeSelect(selectHooks) })
     el.appendChild(b)
   }
   $('tier-hint').textContent = selectedTier.hint
@@ -467,7 +488,7 @@ function renderCourses() {
           <b class="num">${(dist / 1000).toFixed(2)}<i>km</i></b>
           <span>${selectedTier.label} 기준 예상</span>
         </div>`
-      b.addEventListener('click', () => { selectedCourse = c; renderCourses() })
+      b.addEventListener('click', () => { selectedCourse = c; renderCourses(); renderArcadeSelect(selectHooks) })
       grid.appendChild(b)
     }
     el.appendChild(grid)
@@ -502,6 +523,9 @@ const ambience = new AmbientSoundscape(metronome)
 /** 상어 추격 모드의 배경 음악 — 달리는 동안 켜지고 요약·종료·화면 이탈에서 멈춘다 */
 const sharkScore = new SharkScore(metronome)
 const hud = new RaceHud()
+/** 재미 요소 — 리듬 콤보·파워 구간·랜드마크 체크포인트·백조·날씨 보너스·심박 존·코인, 그리고 콕스 음성 (src/ui/arcade.ts) */
+const coxVoice = new CoxVoice(metronome)
+const arcade = new Arcade(hud, coxVoice, ambience)
 let racePath: CoursePath = createCoursePath(selectedCourse.id)
 let raceTotal = 1
 
@@ -553,9 +577,13 @@ async function startRace() {
   void metronome.unlock()
   cues.primeSpeech()
   metronome.stop()
-  const ghost = loadGhost(selectedCourse.id)
+  // 링크로 받은 친구 고스트가 이 코스 것이면 내 최고 기록 대신 친구가 옆 레인에 선다
+  const friend = friendGhostFor(selectedCourse.id)
+  const ghost = friend ? ghostTrackFrom(friend) : loadGhost(selectedCourse.id)
   // 개발 중에는 `?weather=seed`로 날씨 일정을 고정해 같은 하늘을 다시 볼 수 있다.
-  const weatherSeed = new URLSearchParams(location.search).get('weather')
+  // 오늘의 도전은 날짜가 seed라 상어·파워 구간·백조·날씨까지 모두 같은 레이스다.
+  const daily = activeDaily({ courseId: selectedCourse.id, tierId: selectedTier.id, mode: selectedMode })
+  const weatherSeed = new URLSearchParams(location.search).get('weather') ?? daily?.seed ?? null
   session = new Session(
     selectedCourse, selectedTier.split, ghost,
     weatherSeed ? `${selectedCourse.id}:${weatherSeed}` : undefined, selectedMode,
@@ -589,8 +617,13 @@ async function startRace() {
   show('screen-race')
   // 코스 띠는 폭을 재서 그리므로 화면이 보인 뒤에 만든다
   hud.start(selectedCourse, racePath, raceTotal, ghost !== null, selectedMode)
+  arcade.start({
+    session, course: selectedCourse, total: raceTotal, tierId: selectedTier.id, mode: selectedMode, daily,
+    friendGhostName: friend?.name ?? null,
+    hasHr: knownHr !== null || hrSensor?.status === 'connected',
+  })
   view?.dispose()
-  view = new View(cv, session, avatarBody)
+  view = new View(cv, session, avatarBody, playerRigColors(loadWallet(), COLORS_PLAYER))
   // 상어 모드에서만 화면을 나눈다 — 가로는 왼쪽 절반, 세로는 위쪽 띠가 상어 시점. HUD는 .split로 오른쪽에 모인다
   const split = selectedMode === 'shark'
   $('shark-view').classList.toggle('on', split)
@@ -757,6 +790,9 @@ function frame(now: number) {
       presence: view.getAmbientPresence(),
     })
     updateHud(dt)
+    // 재미 요소는 HUD 뒤에 — 미니맵 표식은 다음 프레임에 그려진다
+    arcade.frame(session, dt)
+    view.setSplashBoost(1 + arcade.comboLevel * 0.22)
     checkFeedback()
     if (session.phase === 'finished') {
       if (session.metrics().progress >= 0.999) cues.finish()
@@ -946,6 +982,9 @@ function showSummary() {
   releaseWakeLock()
 
   const completed = m.progress >= 0.999
+  // 코인을 지갑에 넣고 요약 재료를 받는다. 레이스 화면의 레일은 치운다
+  const arc = arcade.finish(s, completed)
+  arcade.stop()
   $('sum-title').textContent = completed ? '완주 성공!' : '수고했어요!'
 
   // 끝난 직후엔 숫자보다 기분이 먼저다 — 진 경우에도 해낸 것(저은 거리·시간)부터 말하고 다음 목표를 준다
@@ -975,8 +1014,16 @@ function showSummary() {
 
   // 고스트(지난 최고 기록) 대비.
   // ⚠️ 이번 세션을 저장하기 전에 비교해야 한다 — 저장 후엔 이번 기록이 최고가 되어버린다
-  const prevBest = s.ghost?.record ?? null
+  // 친구 고스트와 탔으면 그건 내 최고가 아니다 — 친구와의 차이만 말하고 기록 갱신으로 치지 않는다
+  const friendName = arc.friendGhostName
+  const prevBest = friendName ? null : (s.ghost?.record ?? null)
   let newRecord = false
+  if (friendName && s.ghost && completed) {
+    const diff = m.distance - s.ghost.record.distance
+    lines.push(diff >= 0
+      ? `친구 <b>${friendName}</b>보다 <b>${Math.round(diff)}m</b> 앞서 들어왔어요. 링크를 돌려주면 설욕전이 시작돼요.`
+      : `친구 <b>${friendName}</b>까지 <b>${Math.abs(Math.round(diff))}m</b>. 다음엔 따라잡을 거예요.`)
+  }
   if (prevBest && completed) {
     const diff = m.distance - prevBest.distance
     lines.push(
@@ -996,6 +1043,7 @@ function showSummary() {
   const avgPow = n ? s.track.reduce((a, x) => a + x.power, 0) / n : 0
 
   // 아주 짧게 끝난 세션은 기록으로 남기지 않는다 (실수로 시작한 경우)
+  let savedRecord: SessionRecord | null = null
   if (m.elapsed >= 60 && m.distance > 50) {
     const rec: SessionRecord = {
       id: `${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
@@ -1020,7 +1068,10 @@ function showSummary() {
       rec.mode = s.mode
       rec.modeScore = m.shark ? m.shark.caught : m.rival ? m.rival.passed : 0
     }
+    if (arc.coinsTotal > 0) rec.coins = arc.coinsTotal
+    if (arc.comboBest > 0) rec.comboBest = arc.comboBest
     saveRecord(rec)
+    savedRecord = rec
   }
 
   // 거리는 한 번만 크게 — 나머지는 타일. 비교는 칩으로 (글리프 + 글자, 색만으로 뜻을 나르지 않는다)
@@ -1039,6 +1090,7 @@ function showSummary() {
       : [deltaChipHtml(m.gap, 'm', '페이스 보트 대비')]
   if (isFinite(m.avgSplit) && m.distance > 50) chips.push(deltaChipHtml(m.avgSplit - s.baseSplit, 's', '목표 스플릿 대비', false))
   if (prevBest && completed) chips.push(deltaChipHtml(m.distance - prevBest.distance, 'm', '내 최고 대비'))
+  if (friendName && s.ghost && completed) chips.push(deltaChipHtml(m.distance - s.ghost.record.distance, 'm', `친구 ${friendName} 대비`))
   $('sum-chips').innerHTML = chips.join('')
 
   const avgSpeed = m.elapsed > 0 ? (m.distance / m.elapsed) * 3.6 : 0
@@ -1055,6 +1107,8 @@ function showSummary() {
     .join('')
 
   if (!(source instanceof MockSource)) void uploadBleLog(completed ? 'finished' : 'quit')
+  // 코인 내역·콤보·체크포인트·순위표 올리기·친구 고스트 링크
+  renderArcadeSummary($('sum-arcade'), arc, { record: savedRecord, completed, build: BUILD })
   show('screen-summary')
   // 차트는 폭을 재서 그리므로 화면이 보인 뒤에 그린다
   const curve = thinCurve(s.track, 30)
@@ -1101,3 +1155,8 @@ document.addEventListener('visibilitychange', () => {
 })
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+// 친구 고스트 링크(?ghost=id)로 들어왔으면 기록을 받아 둔다 — 코스 선택 화면이 열려 있으면 배너를 다시 그린다
+void loadSharedGhostFromUrl(() => {
+  if ($('screen-course').classList.contains('active')) renderArcadeSelect(selectHooks)
+})

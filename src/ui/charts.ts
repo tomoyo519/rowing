@@ -55,7 +55,10 @@ export function intensitySamples(course: Course, n: number): number[] {
  * 구간 경계는 2px 틈, 5분마다 아래 눈금. 재생 헤드는 흰 선 + 어두운 테두리.
  * 폭을 재서 그리므로(늘리지 않음) 틈·선이 늘 같은 두께다.
  */
-export function profileStripSvg(course: Course, width: number, height = 24, samples = 240): string {
+/** 코스 띠 위에 표시할 구간 — 파워 구간(powerZones.ts). start·end는 초 */
+export interface StripMarker { start: number; end: number }
+
+export function profileStripSvg(course: Course, width: number, height = 24, samples = 240, markers: readonly StripMarker[] = []): string {
   const W = Math.max(120, Math.round(width)), H = height, D = course.durationSec
   const y = (v: number) => H - 1 - ((clamp(v, PROFILE_LO, PROFILE_HI) - PROFILE_LO) / (PROFILE_HI - PROFILE_LO)) * (H - 2)
   const ys = intensitySamples(course, samples)
@@ -70,6 +73,10 @@ export function profileStripSvg(course: Course, width: number, height = 24, samp
     const x = f1((t / D) * W)
     ticks.push(`<line x1="${x}" x2="${x}" y1="${H - 5}" y2="${H}" stroke="rgba(255,255,255,.55)" stroke-width="1"/>`)
   }
+  // 파워 구간: 띠 아래쪽에 금색 막대. 강도 띠(옅은 주황 계열)와 구분되게 테두리 고리를 두른다
+  const zoneMarks = markers
+    .map(z => `<rect x="${f1((z.start / D) * W)}" y="${H - 4}" width="${f1(((z.end - z.start) / D) * W)}" height="4" rx="1" fill="var(--gold, #ffb648)" stroke="var(--hud-ring, #0f1a24)" stroke-width="1"/>`)
+    .join('')
   const sections = profileSections(course.profile, D)
     .map(s => `<li>${formatClock(s.start)}–${formatClock(s.end)} ${escapeHtml(s.label)}</li>`).join('')
   return `<svg class="pf-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeHtml(course.name)} 강도 프로파일" aria-describedby="race-profile-alt">
@@ -82,7 +89,7 @@ export function profileStripSvg(course: Course, width: number, height = 24, samp
       <path d="${line}" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
     </g>
     <line x1="0" x2="${W}" y1="${f1(y(1))}" y2="${f1(y(1))}" stroke="rgba(255,255,255,.38)" stroke-width="1"/>
-    ${ticks.join('')}${gaps}
+    ${ticks.join('')}${gaps}${zoneMarks}
     <line id="s-prog-ring" x1="0" x2="0" y1="-3" y2="${H + 3}" stroke="var(--hud-ring, #0f1a24)" stroke-width="6" stroke-linecap="round"/>
     <line id="s-prog" x1="0" x2="0" y1="-3" y2="${H + 3}" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
   </svg><ul class="sr-only" id="race-profile-alt">${sections}</ul>`

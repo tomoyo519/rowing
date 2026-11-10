@@ -200,6 +200,15 @@ export class AmbientSoundscape {
 
   stop() { this.stopSources() }
 
+  /**
+   * 재미 요소가 요청하는 즉석 효과음 — 파워 구간 성공의 함성, 백조 통과의 오리 소리.
+   * 스케줄러를 거치지 않고 바로 낸다. 준비가 안 됐거나 음소거면 조용히 넘어간다.
+   */
+  cue(kind: AmbientEventKind, pan = 0) {
+    if (this.metronome.isMuted) return
+    this.play({ kind, pan, variant: Math.random() })
+  }
+
   private play(event: AmbientEvent) {
     let source: AudioBufferSourceNode | null = null
     let gain: GainNode | null = null

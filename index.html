@@ -462,7 +462,7 @@
     /* 분할 중엔 HUD 아래 줄이 오른쪽 절반에 모인다 — 구간 카드만 왼쪽(상어 시점) 구석에 남는다 */
     .hud.split .hud-bottom { grid-template-columns: 50% 1fr minmax(132px, 150px); }
     .hud.split .seg-card { justify-self: start; width: min(272px, calc(100% - 16px)); }
-    .hud.split .landmark, .hud.split .start-hint, .hud.split .mode-toast { left: 75%; }
+    .hud.split .landmark, .hud.split .start-hint, .hud.split .mode-toast, .hud.split .arcade-toast { left: 75%; }
     .hud.split .simctl { top: calc(var(--safe-t) + 152px); }
   }
   @media (orientation: portrait) {
@@ -474,6 +474,8 @@
     .shark-view-k { left: 8px; top: 6px; font-size: 10px; padding: 2px 7px; }
     /* 띠가 시뮬레이터 슬라이더 자리와 겹친다 — 슬라이더를 띠 아래로 내린다 */
     .hud.split .simctl { top: calc(var(--safe-t) + 132px + 30vh + 10px); }
+    /* 재미 요소 레일도 띠 아래로 */
+    .hud.split .arcade-rail { top: calc(var(--safe-t) + 132px + 30vh + 10px); }
   }
 
   /* ── 모드 사건 알림 ── 상어 경고·물림, 라이벌 버팀·추월. 2.6초 뒤 사라진다 */
@@ -760,6 +762,142 @@
   .sum-chart .ttl { font-size: 12px; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
   #screen-summary .tiles { grid-template-columns: repeat(3, 1fr); margin: 0 0 24px; }
   @media (max-width: 520px) { #screen-summary .tiles { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ── 재미 요소 (arcade): 오른쪽 레일·알림·부스트 가장자리 — src/ui/arcadeHud.ts ──
+     코스 띠 아래 오른쪽 세로 레일. 가운데(피드백·알림·뒤 보기)와 왼쪽(시뮬레이터)을 비워 둔다. 블러 없음 */
+  .arcade-rail {
+    position: absolute; right: calc(var(--safe-r) + 16px); top: calc(var(--safe-t) + 118px); width: 232px;
+    display: flex; flex-direction: column; align-items: stretch; gap: 8px; pointer-events: none; z-index: 2;
+  }
+  .arcade-rail[hidden] { display: none; }
+  .combo-chip { display: flex; align-items: baseline; gap: 8px; padding: 8px 14px; border-radius: var(--r-sm); --combo: rgba(255,255,255,.55); }
+  .combo-chip .combo-k { font-size: 11px; font-weight: 700; color: var(--ink-2); }
+  .combo-chip b { font-size: 26px; font-weight: 800; color: var(--combo); line-height: 1; min-width: 34px; transform-origin: 30% 60%; }
+  .combo-chip .combo-best { margin-left: auto; font-style: normal; font-size: 10.5px; color: var(--ink-3); }
+  /* 콤보 단계: 10 흰색 → 25 틸 → 50 금색 → 100 주황 → 200 분홍. 상태색(빠름/느림)과 겹치지 않는 색만 쓴다 */
+  .combo-chip[data-level="1"] { --combo: #fff; }
+  .combo-chip[data-level="2"] { --combo: var(--accent-2); }
+  .combo-chip[data-level="3"] { --combo: var(--gold); }
+  .combo-chip[data-level="4"] { --combo: var(--int-3); border-color: rgba(240,133,26,.5); }
+  .combo-chip[data-level="5"] { --combo: #ff9ad5; border-color: rgba(255,154,213,.6); }
+  .combo-chip.bump b { animation: beat-pop .18s cubic-bezier(.2,.9,.3,1); }
+  .coin-chip { display: flex; align-items: baseline; gap: 6px; padding: 6px 14px; border-radius: var(--r-sm); }
+  .coin-ic { color: var(--gold); font-size: 11px; }
+  .coin-chip b { font-size: 18px; font-weight: 760; color: #fff; transform-origin: 30% 60%; }
+  .coin-chip .coin-mult { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--gold); }
+  .coin-chip.bump b { animation: beat-pop .25s cubic-bezier(.2,.9,.3,1); }
+  .coin-chip.bonus { border-color: rgba(255,182,72,.5); }
+  .hrz { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; align-items: center; padding: 7px 12px; border-radius: var(--r-sm); }
+  .hrz[hidden] { display: none; }
+  .hrz-k { font-size: 12px; font-weight: 800; color: #ff6b7a; }
+  .hrz-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+  .hrz-track i { display: block; height: 100%; background: #ff6b7a; transform-origin: left; transform: scaleX(0); transition: transform .4s linear; }
+  .hrz.in .hrz-track i { background: var(--st-ahead); } .hrz.over .hrz-track i { background: var(--st-behind); }
+  .hrz.boost .hrz-track i { background: var(--st-ok); }
+  .hrz-t { grid-column: 1 / -1; font-size: 10.5px; color: var(--ink-3); font-weight: 600; }
+  .zone-card, .swan-card { padding: 9px 12px 10px; border-radius: var(--r-sm); display: grid; gap: 6px; }
+  .zone-card[hidden], .swan-card[hidden] { display: none; }
+  .zone-head, .swan-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .zone-head b { font-size: 13px; font-weight: 800; color: var(--gold); }
+  .swan-head b { font-size: 13px; font-weight: 800; color: #fff; }
+  .zone-head span, .swan-head span { font-size: 20px; font-weight: 800; color: #fff; }
+  .zone-bar, .swan-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+  .zone-bar i, .swan-bar i { display: block; height: 100%; background: var(--gold); transform-origin: left; transform: scaleX(0); }
+  .swan-bar i { background: #fff; }
+  .zone-sub, .swan-sub { font-size: 11px; color: var(--ink-2); font-weight: 600; }
+  .zone-card.active { border-color: rgba(255,182,72,.6); }
+  .zone-card.ok .zone-sub { color: var(--st-ahead-ink); } .zone-card.behind .zone-sub { color: var(--st-behind-ink); }
+  .swan-card.late { border-color: rgba(255,98,82,.55); }
+  /* 재미 요소 알림 — 모드 알림(38%)·랜드마크(46%)보다 아래 */
+  .arcade-toast {
+    position: absolute; left: 50%; top: 53%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    width: max-content; max-width: calc(100vw - 32px); padding: 10px 22px; text-align: center; white-space: nowrap;
+    border-radius: var(--r-md); background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--glass-hi);
+    color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,.6); opacity: 0; pointer-events: none; transition: opacity .3s; z-index: 3;
+  }
+  .arcade-toast.on { opacity: 1; animation: toast-in .32s cubic-bezier(.2,.9,.3,1); }
+  .arcade-toast b { font-size: 22px; font-weight: 800; letter-spacing: -.01em; }
+  .arcade-toast span { font-size: 12.5px; color: var(--ink-2); font-weight: 600; }
+  .arcade-toast span:empty { display: none; }
+  .arcade-toast.win b { color: var(--st-ahead-ink); } .arcade-toast.danger b { color: var(--st-behind-ink); } .arcade-toast.warn b { color: var(--gold); }
+  /* 심박 부스트 가장자리 — 상어 위험(붉음)과 다른 청록 */
+  .boost-veil { position: absolute; inset: 0; pointer-events: none; z-index: 0; opacity: 0; transition: opacity .4s; box-shadow: inset 0 0 90px 18px rgba(54,188,229,.55); }
+  .boost-veil.on { opacity: 1; animation: boost-pulse .9s ease-in-out infinite; }
+  @keyframes boost-pulse { 50% { opacity: .55; } }
+  @media (orientation: portrait) {
+    .arcade-rail { top: calc(var(--safe-t) + 136px); width: 184px; right: 14px; }
+    .arcade-toast { top: 47%; } .arcade-toast b { font-size: 19px; }
+  }
+  @media (max-height: 560px) and (orientation: landscape) { .arcade-rail { zoom: .82; } }
+
+  /* ── 코스 선택: 오늘의 도전·친구 고스트·내 보트 (src/ui/garage.ts) ── */
+  #arcade-select:empty { display: none; }
+  .daily-card { padding: 15px 17px; margin-bottom: 14px; display: grid; gap: 8px; border-color: rgba(255,182,72,.35); }
+  .daily-card.sel { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(255,182,72,.16); }
+  .daily-head { display: flex; justify-content: space-between; align-items: center; }
+  .daily-head .k { color: var(--gold); letter-spacing: .08em; }
+  .daily-body { font-size: 15px; } .daily-body b { font-size: 17px; }
+  .daily-sub { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .daily-pick { padding: 12px 16px; font-size: 15px; }
+  .daily-pick:disabled { opacity: .7; }
+  .friend-banner { padding: 13px 16px; margin-bottom: 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-color: rgba(255,182,72,.35); }
+  .friend-banner.sel { border-color: var(--gold); }
+  .friend-text { flex: 1; min-width: 220px; font-size: 14px; line-height: 1.5; }
+  .friend-sub { display: block; font-size: 12px; color: var(--muted); }
+  .friend-actions { display: flex; gap: 10px; align-items: center; }
+  #garage { margin-bottom: 28px; }
+  .garage-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .garage-head h2 { margin-bottom: 8px; }
+  .garage-wallet { font-size: 13px; color: var(--muted); } .garage-wallet b { color: var(--text); font-size: 16px; }
+  .garage-hint { text-align: left; margin: 0 0 12px; max-width: 640px; }
+  .skin-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .skin {
+    display: grid; grid-template-columns: auto 1fr; gap: 2px 9px; align-items: center; padding: 8px 12px 8px 9px;
+    border-radius: 12px; background: var(--panel); border: 1px solid var(--line); text-align: left; min-width: 118px;
+  }
+  .skin i { grid-row: 1 / span 2; width: 24px; height: 24px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); }
+  .skin b { font-size: 13px; } .skin span { font-size: 10.5px; color: var(--muted); }
+  .skin.sel { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(53,194,165,.16); }
+  .skin.locked span { color: var(--gold); } .skin:disabled { opacity: .45; }
+  .garage-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; max-width: 640px; margin: 14px 0 8px; }
+  .field { display: grid; gap: 5px; font-size: 13px; }
+  .field small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+  .field input { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; -webkit-user-select: text; user-select: text; }
+  .field input:focus { outline: none; border-color: var(--accent-2); }
+
+  /* ── 순위표 패널 ── */
+  .leaderboard { position: fixed; z-index: 21; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(5,11,17,.6); padding: 20px; }
+  .leaderboard[hidden] { display: none; }
+  .lb-panel { width: min(560px, 100%); max-height: 86vh; display: flex; flex-direction: column; background: #0a111a; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; box-shadow: 0 20px 70px rgba(0,0,0,.5); }
+  .lb-head { display: flex; justify-content: space-between; align-items: center; padding: 13px 15px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 14px; font-weight: 750; }
+  .lb-list { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 6px 0; }
+  .lb-rows { list-style: none; margin: 0; padding: 0; }
+  .lb-row { display: grid; grid-template-columns: 34px 1fr auto auto; gap: 10px; align-items: baseline; padding: 10px 15px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 13.5px; }
+  .lb-row.mine { background: rgba(53,194,165,.1); }
+  .lb-rank { color: var(--muted); font-weight: 700; } .lb-row:nth-child(-n+3) .lb-rank { color: var(--gold); }
+  .lb-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .lb-name i { font-style: normal; font-size: 10px; color: var(--accent-2); margin-left: 4px; }
+  .lb-meta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .lb-dist { white-space: nowrap; color: var(--muted); font-size: 12px; } .lb-dist b { color: var(--text); font-size: 15px; }
+  .lb-foot { padding: 10px 15px; font-size: 11.5px; color: var(--muted); text-align: center; }
+
+  /* ── 요약: 코인·콤보·체크포인트·순위표·공유 (src/ui/arcadeSummary.ts) ── */
+  #sum-arcade[hidden] { display: none; }
+  .arc-coins { padding: 13px 16px 10px; margin: 0 0 14px; }
+  .arc-coins-head { display: flex; align-items: baseline; gap: 10px; }
+  .arc-coins-head > b { font-size: 28px; font-weight: 800; color: var(--gold); }
+  .arc-wallet { margin-left: auto; font-size: 12.5px; color: var(--muted); } .arc-wallet b { color: var(--text); }
+  .arc-coins .chips { margin: 8px 0 2px; }
+  #screen-summary .arc-tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: 0 0 14px; }
+  .arc-tiles .v span { font-size: 11px; color: var(--muted); font-weight: 500; margin-left: 4px; font-family: -apple-system, system-ui, sans-serif; }
+  .arc-cp { margin: 0 0 14px; } .arc-cp td .delta { padding: 2px 7px; font-size: 11px; }
+  .arc-actions { display: grid; gap: 12px; margin: 0 0 18px; }
+  .arc-daily { padding: 13px 15px; border-radius: var(--r-md); background: var(--panel); border: 1px solid rgba(255,182,72,.35); display: grid; gap: 9px; }
+  .arc-daily-head { display: flex; justify-content: space-between; align-items: center; } .arc-daily-head .k { color: var(--gold); letter-spacing: .08em; }
+  .arc-daily-row { display: flex; gap: 8px; }
+  .arc-daily-row input { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; -webkit-user-select: text; user-select: text; }
+  .arc-status { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+  .arc-link { color: var(--accent-2); user-select: text; -webkit-user-select: text; }
 </style>
 </head>
 <body>
@@ -791,9 +929,12 @@
   <div class="pad">
     <h1>코스 선택</h1>
     <p class="sub">목표 페이스를 먼저 정하면 각 코스의 예상 거리가 계산됩니다.<br>코스마다 강도 변화 패턴이 다릅니다 — 카드의 그래프가 시간에 따른 페이스 곡선입니다.</p>
+    <div id="arcade-select"></div>
 
     <h2>아바타</h2>
     <div class="avatars" id="avatars" role="group" aria-label="아바타 체형"></div>
+    <!-- 코인·해금·별명·최대 심박 (src/ui/garage.ts) -->
+    <div id="garage"></div>
 
     <!-- 로잉머신이 FTMS로 심박을 안 보내는 경우가 많다. 벨트·시계를 따로 붙이면 HUD의 심박 칸이 채워진다. Web Bluetooth가 있을 때만 보인다. -->
     <div class="hr-row" id="hr-row" hidden>
@@ -937,6 +1078,16 @@
       <button class="icon-btn" id="btn-cam" title="카메라 전환">◳</button>
       <button class="icon-btn" id="btn-quit" title="운동 종료" aria-label="운동 종료">✕</button>
     </div>
+    <!-- 재미 요소: 콤보·코인·심박 존·파워 구간·백조 (src/ui/arcadeHud.ts) -->
+    <div class="arcade-rail" id="arcade-rail" hidden>
+      <div class="combo-chip glass" id="combo-chip" data-level="0"><span class="combo-k">콤보</span><b class="num" id="combo-n">0</b><i class="combo-best num" id="combo-best"></i></div>
+      <div class="coin-chip glass" id="coin-chip"><span class="coin-ic">●</span><b class="num" id="coin-n">0</b><span class="coin-mult" id="coin-mult"></span></div>
+      <div class="hrz glass" id="hrz" hidden><span class="hrz-k" id="hrz-k">Z3</span><div class="hrz-track"><i id="hrz-fill"></i></div><span class="hrz-t" id="hrz-t">존 게이지</span></div>
+      <div class="zone-card glass" id="zone-card" hidden><div class="zone-head"><b id="zone-title">파워 구간</b><span class="num" id="zone-rem">30초</span></div><div class="zone-bar"><i id="zone-fill"></i></div><div class="zone-sub" id="zone-sub"></div></div>
+      <div class="swan-card glass" id="swan-card" hidden><div class="swan-head"><b>백조 떼 건너기</b><span class="num" id="swan-rem">10초</span></div><div class="swan-bar"><i id="swan-fill"></i></div><div class="swan-sub" id="swan-sub"></div></div>
+    </div>
+    <div class="arcade-toast" id="arcade-toast" aria-live="polite"><b id="arcade-toast-t"></b><span id="arcade-toast-s"></span></div>
+    <div class="boost-veil" id="boost-veil"></div>
     <div class="simctl glass" id="simctl">
       <label>강도</label>
       <input type="range" id="sim-intensity" min="0" max="100" value="55" />
@@ -972,11 +1123,20 @@
     </div>
     <div class="chips" id="sum-chips"></div>
     <p class="verdict" id="sum-verdict"></p>
+    <div id="sum-arcade" hidden></div>
     <div class="card sum-chart"><div class="ttl">스플릿 추이 · 목표 대비</div><div id="sum-chart"></div></div>
     <div class="tiles" id="sumgrid"></div>
     <button id="btn-again" class="btn">다시 하기</button>
     <div style="height:12px"></div>
     <button id="btn-sum-history" class="btn ghost">기록 보기</button>
+  </div>
+</section>
+
+<!-- 오늘의 도전 순위표 (src/ui/garage.ts showLeaderboard) -->
+<section class="leaderboard" id="leaderboard" hidden role="dialog" aria-modal="true" aria-labelledby="lb-title">
+  <div class="lb-panel">
+    <div class="lb-head"><span id="lb-title">오늘의 도전 순위표</span><button class="ble-mini-btn" id="lb-close" type="button">닫기</button></div>
+    <div class="lb-list" id="lb-list"></div>
   </div>
 </section>
 

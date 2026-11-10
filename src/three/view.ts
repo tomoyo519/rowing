@@ -8,7 +8,7 @@ import { World, type AmbientPresence } from './world'
 import { markReflective, PlanarReflection } from './reflection'
 import { initialQuality, QUALITY_PRESETS, QualityGovernor, type QualitySettings, type QualityTier } from './quality'
 import { applyAnisotropy } from './textures'
-import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST, COLORS_RIVALS, type RigBody } from './rig'
+import { Rig, COLORS_PLAYER, COLORS_PACE, COLORS_GHOST, COLORS_RIVALS, type RigBody, type RigColors } from './rig'
 import { Shark } from './shark'
 import { projectedDistance } from '../game/courses'
 import { splitToSpeed } from '../game/physics'
@@ -166,7 +166,8 @@ export class View {
   private composerTarget: THREE.WebGLRenderTarget | null = null
 
   /** @param body 플레이어(와 지난 기록의 고스트) 아바타 체형 */
-  constructor(canvas: HTMLCanvasElement, session: Session, body: RigBody = 'male') {
+  /** @param playerColors 내 보트·노 색 — 코인으로 해금한 색(wallet.ts)을 main이 넘긴다 */
+  constructor(canvas: HTMLCanvasElement, session: Session, body: RigBody = 'male', playerColors: RigColors = COLORS_PLAYER) {
     this.renderer = new THREE.WebGLRenderer({
       canvas, antialias: true, powerPreference: 'high-performance',
     })
@@ -193,7 +194,7 @@ export class View {
     this.total = projectedDistance(session.course, session.baseSplit)
     this.path = createCoursePath(session.course.id)
 
-    this.player = new Rig(COLORS_PLAYER, 1, 0, body)
+    this.player = new Rig(playerColors, 1, 0, body)
     this.world.scene.add(this.player.group)
 
     if (session.mode === 'classic') {
@@ -549,6 +550,11 @@ export class View {
   }
 
   get cameraName(): string { return CAMERAS[this.camIndex]!.name }
+
+  /** 내 보트 물보라 배율 — 리듬 콤보 단계에 따라 커진다 (1 = 기본) */
+  setSplashBoost(boost: number) {
+    this.player.splashBoost = Math.max(1, boost)
+  }
 
   nearestLandmark(session: Session) {
     return this.world.nearestLandmark(session.boat.distance, this.total)

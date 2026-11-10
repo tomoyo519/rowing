@@ -110,6 +110,8 @@ function row(r: SessionRecord, isPb: boolean): string {
       <div class="sub" style="margin-top:12px">
         <span>평균 파워 <b>${Math.round(r.avgPower)}</b>W</span>
         <span>스트로크 <b>${r.strokeCount}</b></span>
+        ${r.coins !== undefined ? `<span>코인 <b>+${r.coins}</b></span>` : ''}
+        ${r.comboBest !== undefined && r.comboBest > 0 ? `<span>최장 콤보 <b>${r.comboBest}</b></span>` : ''}
       </div>
       <div class="hrow-actions">
         <button class="link-btn" data-id="${escapeHtml(r.id)}">이 기록 삭제</button>
