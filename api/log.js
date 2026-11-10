@@ -4,9 +4,10 @@
 //   GET  /api/log?key=K                최근 로그 목록(JSON)
 //   GET  /api/log?key=K&latest=1       가장 최근 로그 본문(text)
 //   GET  /api/log?key=K&n=3            최근 3개 본문을 이어서(text)
+// 스토어는 Private으로 만들었으므로 blob도 private으로 쓰고, 읽을 때는 SDK get()으로 토큰을 써서 가져온다.
 // 환경변수: BLOB_READ_WRITE_TOKEN (Vercel Storage에서 Blob 스토어를 프로젝트에 연결하면 자동 추가),
 //           LOG_READ_KEY (읽기 키 — 대시보드에서 직접 설정)
-import { put, list } from '@vercel/blob'
+import { put, list, get } from '@vercel/blob'
 
 const PREFIX = 'ble-logs/'
 const MAX_BYTES = 512 * 1024
@@ -32,7 +33,7 @@ export default async function handler(req, res) {
     if (!text || !text.trim()) { res.status(400).json({ error: 'empty' }); return }
     const body = text.length > MAX_BYTES ? text.slice(-MAX_BYTES) : text
     const name = `${PREFIX}${new Date().toISOString().replace(/[:.]/g, '-')}.txt`
-    const blob = await put(name, body, { access: 'public', addRandomSuffix: true, contentType: 'text/plain; charset=utf-8' })
+    const blob = await put(name, body, { access: 'private', addRandomSuffix: true, contentType: 'text/plain; charset=utf-8' })
     res.status(200).json({ url: blob.url, bytes: body.length })
     return
   }
@@ -47,8 +48,9 @@ export default async function handler(req, res) {
     if (n > 0) {
       const parts = []
       for (const blob of blobs.slice(0, n)) {
-        const r = await fetch(blob.url)
-        parts.push(`===== ${blob.pathname} (${blob.uploadedAt}) =====\n${await r.text()}`)
+        const got = await get(blob.url, { access: 'private' })
+        const text = got ? await new Response(got.stream).text() : '(읽기 실패)'
+        parts.push(`===== ${blob.pathname} (${blob.uploadedAt}) =====\n${text}`)
       }
       res.setHeader('content-type', 'text/plain; charset=utf-8')
       res.status(200).send(parts.join('\n\n'))
